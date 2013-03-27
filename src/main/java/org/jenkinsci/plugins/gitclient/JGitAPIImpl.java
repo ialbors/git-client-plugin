@@ -1,5 +1,7 @@
 package org.jenkinsci.plugins.gitclient;
 
+import hudson.EnvVars;
+import hudson.ProxyConfiguration;
 import hudson.model.TaskListener;
 import hudson.plugins.git.*;
 import org.eclipse.jgit.api.CommitCommand;
@@ -21,7 +23,16 @@ import org.eclipse.jgit.transport.*;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.Authenticator;
+import java.net.InetSocketAddress;
+import java.net.MalformedURLException;
+import java.net.PasswordAuthentication;
+import java.net.Proxy;
+import java.net.ProxySelector;
+import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URL;
+import java.net.Proxy.Type;
 import java.util.*;
 
 import static org.eclipse.jgit.api.ResetCommand.ResetType.HARD;
@@ -42,10 +53,70 @@ public class JGitAPIImpl implements GitClient {
     private final TaskListener listener;
 
     JGitAPIImpl(File workspace, TaskListener listener) {
+    	this(workspace, listener, null);
+    }
+    
+    JGitAPIImpl(File workspace, TaskListener listener, EnvVars envVars) {
         this.workspace = workspace;
         this.listener = listener;
+        if(envVars != null)
+        	setUpProxy(envVars);
     }
 
+    public void setUpProxy(final EnvVars vars) {
+    	
+    	ProxySelector ps = new ProxySelector() {
+
+			@Override
+			public List<Proxy> select(URI uri) {
+                String protocol = uri.getScheme();
+                if ("http".equalsIgnoreCase(protocol) ||
+                        "https".equalsIgnoreCase(protocol)) {                	                	
+                	
+                		final String s = vars.get("http_proxy");                        
+                        if (s == null || s.equals(""))
+                            return null;
+
+                        try{
+                        	final URL u = new URL(s);
+
+                        	final String proxyHost = u.getHost();
+                        	final int proxyPort = u.getPort();
+                        	final String userName = u.getUserInfo().substring(0, u.getUserInfo().indexOf(":"));
+                        	final String userPassword = u.getUserInfo().substring(u.getUserInfo().indexOf(":") + 1);
+
+
+                        	Proxy proxy = new Proxy(Type.HTTP, 
+                        			new InetSocketAddress(proxyHost, proxyPort));
+                        	Authenticator.setDefault(new Authenticator() {
+                        		@Override
+                        		protected PasswordAuthentication getPasswordAuthentication() {
+                        			PasswordAuthentication pAuth = new PasswordAuthentication(
+                        					userName, 
+                        					userPassword.toCharArray());
+                        			return pAuth;
+                        		}
+                        	});
+                        	ArrayList<Proxy> l = new ArrayList<Proxy>();
+                        	l.add(proxy);
+                        	return l;
+                        }
+                        catch(MalformedURLException e){
+                        	e.printStackTrace();
+                        }
+                }
+				return null;
+			}
+			
+			@Override
+			public void connectFailed(URI uri, SocketAddress sa, IOException ioe) {
+				throw new UnsupportedOperationException();
+				
+			}
+		};
+    	JgitProxyConfigurator.setProxySelector(ps);
+    }
+    
     public GitClient subGit(String subdir) {
         return new JGitAPIImpl(new File(workspace, subdir), listener);
     }
