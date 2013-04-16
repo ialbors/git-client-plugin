@@ -43,9 +43,9 @@
 
   <dependencies>
     <dependency>
-      <groupId>org.eclipse.jgit</groupId>
+      <groupId>org.jenkins-ci.lib</groupId>
       <artifactId>org.eclipse.jgit</artifactId>
-      <version>2.2.0.201212191850-r</version>
+      <version>2.4.0-jenkins-1-SNAPSHOT</version>
     </dependency>
     <dependency>
       <groupId>com.google.guava</groupId>
