@@ -28,6 +28,7 @@ import java.net.InetSocketAddress;
 import java.net.MalformedURLException;
 import java.net.PasswordAuthentication;
 import java.net.Proxy;
+import java.net.SocketAddress;
 import java.net.ProxySelector;
 import java.net.URI;
 import java.net.URISyntaxException;
