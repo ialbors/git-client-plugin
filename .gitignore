@@ -1,2 +1,11 @@
-/target/
-work
+*.iml
+*.ipr
+*.iws
+.idea/
+
+target/
+work/
+
+.project
+.classpath
+.settings/
