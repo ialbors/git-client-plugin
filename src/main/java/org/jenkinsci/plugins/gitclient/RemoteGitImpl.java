@@ -386,6 +386,22 @@ class RemoteGitImpl implements GitClient, IGitAPI, Serializable {
         return proxy.getTagNames(tagPattern);
     }
 
+    public void ref(String refName) throws GitException, InterruptedException {
+	proxy.ref(refName);
+    }
+
+    public boolean refExists(String refName) throws GitException, InterruptedException {
+	return proxy.refExists(refName);
+    }
+
+    public void deleteRef(String refName) throws GitException, InterruptedException {
+	proxy.deleteRef(refName);
+    }
+
+    public Set<String> getRefNames(String refPrefix) throws GitException, InterruptedException {
+	return proxy.getRefNames(refPrefix);
+    }
+
     public Map<String, ObjectId> getHeadRev(String url) throws GitException, InterruptedException {
         return proxy.getHeadRev(url);
     }
@@ -396,6 +412,10 @@ class RemoteGitImpl implements GitClient, IGitAPI, Serializable {
 
     public ObjectId revParse(String revName) throws GitException, InterruptedException {
         return proxy.revParse(revName);
+    }
+
+    public RevListCommand revList_() {
+        return proxy.revList_();
     }
 
     public List<ObjectId> revListAll() throws GitException, InterruptedException {

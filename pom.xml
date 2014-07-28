@@ -8,7 +8,7 @@
 
   <groupId>org.jenkins-ci.plugins</groupId>
   <artifactId>git-client</artifactId>
-  <version>1.9.2.1-SNAPSHOT</version>
+  <version>1.10.1.1-SNAPSHOT</version>
   <packaging>hpi</packaging>
   <name>Jenkins GIT client plugin</name>
   <description>Utility plugin for Git support in Jenkins</description>
@@ -43,8 +43,15 @@
   </scm>
 
   <properties>
-    <findbugs-maven-plugin.version>2.5.3</findbugs-maven-plugin.version>
-    <jacoco-maven-plugin.version>0.7.0.201403182114</jacoco-maven-plugin.version>
+    <findbugs-maven-plugin.version>2.5.4</findbugs-maven-plugin.version>
+    <jacoco-maven-plugin.version>0.7.1.201405082137</jacoco-maven-plugin.version>
+    <!-- Maven plugin versions provided by parent are outdated. -->
+    <!-- Generating site report with "mvn site" fails without these updated versions. -->
+    <maven-dependency-plugin.version>2.8</maven-dependency-plugin.version>
+    <maven-enforcer-plugin.version>1.3.1</maven-enforcer-plugin.version>
+    <maven-project-info-reports-plugin.version>2.7</maven-project-info-reports-plugin.version>
+    <maven-site-plugin.version>3.3</maven-site-plugin.version>
+    <!-- End of updated versions required for "mvn site" -->
     <maven-surefire-plugin.version>2.17</maven-surefire-plugin.version>
   </properties>
 
@@ -52,7 +59,7 @@
     <dependency>
       <groupId>org.eclipse.jgit</groupId>
       <artifactId>org.eclipse.jgit</artifactId>
-      <version>3.3.2.201404171909-r-ialbors</version>
+      <version>3.4.1.201406201815-r-ialbors</version>
     </dependency>
     <dependency>
       <groupId>junit</groupId>
@@ -75,29 +82,23 @@
     <dependency>
       <groupId>com.google.code.findbugs</groupId>
       <artifactId>jsr305</artifactId>
-      <version>2.0.3</version>
+      <version>3.0.0</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>org.jenkins-ci.plugins</groupId>
       <artifactId>ssh-credentials</artifactId>
-      <version>1.6.1</version>
+      <version>1.7.1</version>
     </dependency>
     <dependency>
       <groupId>org.apache.httpcomponents</groupId>
       <artifactId>httpclient</artifactId>
-      <version>4.3.3</version>
+      <version>4.3.4</version>
     </dependency>
     <dependency>
       <groupId>commons-codec</groupId>
       <artifactId>commons-codec</artifactId>
       <version>1.9</version>
-      <scope>provided</scope>
-    </dependency>
-    <dependency>
-      <groupId>com.google.guava</groupId>
-      <artifactId>guava</artifactId>
-      <version>11.0.1</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
@@ -143,46 +144,21 @@
     </pluginManagement>
     <plugins>
       <plugin>
-        <artifactId>maven-surefire-plugin</artifactId>
-        <version>${maven-surefire-plugin.version}</version>
-        <configuration>
-          <!-- Sets the VM argument line used when unit tests are run. -->
-          <argLine>${surefireArgLine}</argLine>
-        </configuration>
-      </plugin>
-      <plugin>
         <groupId>org.jacoco</groupId>
         <artifactId>jacoco-maven-plugin</artifactId>
         <version>${jacoco-maven-plugin.version}</version>
         <executions>
           <execution>
-            <id>pre-unit-test</id>
             <goals>
               <goal>prepare-agent</goal>
             </goals>
-            <configuration>
-              <!-- Sets the path to the file which contains the execution data. -->
-              <destFile>${project.build.directory}/coverage-reports/jacoco-ut.exec</destFile>
-              <!--
-                  Sets the name of the property containing the settings
-                  for JaCoCo runtime agent.
-              -->
-              <!-- Uncomment next line to measure and report test coverage -->
-              <propertyName>surefireArgLine</propertyName>
-            </configuration>
           </execution>
           <execution>
-            <id>post-unit-test</id>
-            <phase>test</phase>
+            <id>report</id>
+            <phase>prepare-package</phase>
             <goals>
               <goal>report</goal>
             </goals>
-            <configuration>
-              <!-- Sets the path to the file which contains the execution data. -->
-              <dataFile>${project.build.directory}/coverage-reports/jacoco-ut.exec</dataFile>
-              <!-- Sets the output directory for the code coverage report. -->
-              <outputDirectory>${project.reporting.outputDirectory}/jacoco-ut</outputDirectory>
-            </configuration>
           </execution>
         </executions>
       </plugin>

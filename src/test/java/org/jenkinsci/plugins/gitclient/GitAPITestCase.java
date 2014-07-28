@@ -1,11 +1,11 @@
 package org.jenkinsci.plugins.gitclient;
 
+import static java.util.Collections.unmodifiableList;
 import static org.apache.commons.lang.StringUtils.isBlank;
 
 import org.apache.commons.lang.SystemUtils;
 import org.apache.commons.lang.StringUtils;
 
-import com.gargoylesoftware.htmlunit.ProxyConfig;
 import com.google.common.base.Function;
 import com.google.common.base.Predicate;
 import com.google.common.collect.Collections2;
@@ -22,9 +22,7 @@ import hudson.plugins.git.GitLockFailedException;
 import hudson.plugins.git.IGitAPI;
 import hudson.plugins.git.IndexEntry;
 import hudson.remoting.VirtualChannel;
-import hudson.util.IOException2;
-import hudson.util.ReflectionUtils;
-import hudson.util.StreamTaskListener;
+import hudson.util.IOUtils;
 import junit.framework.TestCase;
 
 import org.apache.commons.io.FileUtils;
@@ -40,8 +38,6 @@ import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.transport.URIish;
 import org.jvnet.hudson.test.Bug;
 import org.jvnet.hudson.test.TemporaryDirectoryAllocator;
-import org.objenesis.Objenesis;
-import org.objenesis.ObjenesisBase;
 import org.objenesis.ObjenesisStd;
 
 import java.io.*;
@@ -50,13 +46,19 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
-
-import jenkins.model.Jenkins;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 /**
  * @author <a href="mailto:nicolas.deloof@gmail.com">Nicolas De Loof</a>
@@ -66,7 +68,11 @@ public abstract class GitAPITestCase extends TestCase {
     public final TemporaryDirectoryAllocator temporaryDirectoryAllocator = new TemporaryDirectoryAllocator();
     
     protected hudson.EnvVars env = new hudson.EnvVars();
-    protected TaskListener listener = StreamTaskListener.fromStdout();
+    protected TaskListener listener;
+
+    protected LogHandler handler = null;
+    private int logCount = 0;
+    private static final String LOGGING_STARTED = "Logging started";
 
     private static final String SRC_DIR = (new File(".")).getAbsolutePath();
 
@@ -263,10 +269,55 @@ public abstract class GitAPITestCase extends TestCase {
         return new WorkingArea(x.repo);
     }
 
+    private boolean timeoutVisibleInCurrentTest;
 
+    /**
+     * Returns true if the current test is expected to have a timeout
+     * value visible written to the listener log.  Used to assert
+     * timeout values are passed correctly through the layers without
+     * requiring that the timeout actually expire.
+     * @see #setTimeoutVisibleInCurrentTest(boolean)
+     */
+    protected boolean getTimeoutVisibleInCurrentTest() {
+        return timeoutVisibleInCurrentTest;
+    }
+
+    /**
+     * Pass visible = true to cause the current test to assert that a
+     * timeout value should be reported in at least one of the log
+     * entries.
+     * @param visible set to false if current test performs no operation which should report a timeout value
+     * @see #getTimeoutVisibleInCurrentTest()
+     */
+    protected void setTimeoutVisibleInCurrentTest(boolean visible) {
+        timeoutVisibleInCurrentTest = visible;
+    }
+
+    /**
+     * Array of integer values of the timeouts expected to be passed
+     * to launchCommandIn() during a single test.  Simplest to use if
+     * the first or the last call in a test is the only call which
+     * uses a timeout, then the expectedTimeouts array can be
+     * initialized with default values in all the other entries.
+     */
+    private List<Integer> expectedTimeouts = null;
+
+    protected void setExpectedTimeouts(List<Integer> timeouts) {
+        expectedTimeouts = timeouts;
+    }
 
     @Override
     protected void setUp() throws Exception {
+        setTimeoutVisibleInCurrentTest(true);
+        expectedTimeouts = null;
+        Logger logger = Logger.getLogger(this.getClass().getPackage().getName() + "-" + logCount++);
+        handler = new LogHandler();
+        handler.setLevel(Level.ALL);
+        logger.setUseParentHandlers(false);
+        logger.addHandler(handler);
+        logger.setLevel(Level.ALL);
+        listener = new hudson.util.LogTaskListener(logger, Level.ALL);
+        listener.getLogger().println(LOGGING_STARTED);
         w = new WorkingArea();
     }
 
@@ -301,16 +352,38 @@ public abstract class GitAPITestCase extends TestCase {
         throw new IllegalStateException();
     }
 
+    private void checkTimeout() {
+        List<Integer> timeouts = handler.getTimeouts();
+        if (expectedTimeouts == null) {
+            expectedTimeouts = new ArrayList<Integer>();
+            for (int i = 0; i < timeouts.size(); i++) {
+                expectedTimeouts.add(i, CliGitAPIImpl.TIMEOUT);
+            }
+        } else {
+            assertEquals("Wrong timeout count", expectedTimeouts.size(), timeouts.size());
+            timeouts = expectedTimeouts;
+        }
+        assertEquals("Wrong timeout", expectedTimeouts, timeouts);
+    }
 
     protected abstract GitClient setupGitAPI(File ws) throws Exception;
 
     @Override
     protected void tearDown() throws Exception {
-      try {
-        temporaryDirectoryAllocator.dispose();
-      } catch (IOException e) {
-        e.printStackTrace(System.err);
-      }
+        try {
+            temporaryDirectoryAllocator.dispose();
+        } catch (IOException e) {
+            e.printStackTrace(System.err);
+        }
+        try {
+            String messages = StringUtils.join(handler.getMessages(), ";");
+            assertTrue("Logging not started: " + messages, handler.containsMessageSubstring(LOGGING_STARTED));
+            if (getTimeoutVisibleInCurrentTest()) {
+                checkTimeout();
+            }
+        } finally {
+            handler.close();
+        }
     }
 
     private void check_remote_url(final String repositoryName) throws InterruptedException, IOException {
@@ -330,6 +403,48 @@ public abstract class GitAPITestCase extends TestCase {
         }
     }
 
+    public void test_setAuthor() throws Exception {
+        final String authorName = "Test Author";
+        final String authorEmail = "jenkins@example.com";
+        w.init();
+        w.touch("file1", "Varying content " + java.util.UUID.randomUUID().toString());
+        w.git.add("file1");
+        w.git.setAuthor(authorName, authorEmail);
+        w.git.commit("Author was set explicitly on this commit");
+        List<String> revision = w.git.showRevision(w.head());
+        assertTrue("Wrong author in " + revision, revision.get(2).startsWith("author " + authorName + " <" + authorEmail +"> "));
+    }
+
+    public void test_setCommitter() throws Exception {
+        final String committerName = "Test Commiter";
+        final String committerEmail = "jenkins.plugin@example.com";
+        w.init();
+        w.touch("file1", "Varying content " + java.util.UUID.randomUUID().toString());
+        w.git.add("file1");
+        w.git.setCommitter(committerName, committerEmail);
+        w.git.commit("Committer was set explicitly on this commit");
+        List<String> revision = w.git.showRevision(w.head());
+        assertTrue("Wrong committer in " + revision, revision.get(3).startsWith("committer " + committerName + " <" + committerEmail + "> "));
+    }
+
+    private void setExpectedTimeoutWithAdjustedEnd(final int newTimeout) {
+        setExpectedTimeoutWithAdjustedEnd(newTimeout, 1);
+    }
+
+    private void setExpectedTimeoutWithAdjustedEnd(final int newTimeout, int adjustmentCount) {
+        if (getTimeoutVisibleInCurrentTest()) {
+            int size = handler.getTimeouts().size();
+            List<Integer> expected = new ArrayList<Integer>(size);
+            for (int i = 0; i < size; i++) {
+                expected.add(i, CliGitAPIImpl.TIMEOUT);
+            }
+            for (int i = 0; i < adjustmentCount; i++) {
+                expected.set(size - i - 1, newTimeout);
+            }
+            setExpectedTimeouts(expected);
+        }
+    }
+
     /** Clone arguments include:
      *   repositoryName(String) - if omitted, CliGit does not set a remote repo name
      *   shallow() - no relevant assertion of success or failure of this argument
@@ -343,12 +458,15 @@ public abstract class GitAPITestCase extends TestCase {
      */
     public void test_clone() throws IOException, InterruptedException
     {
-        w.git.clone_().url(localMirror()).repositoryName("origin").execute();
+        int newTimeout = 7;
+        w.git.clone_().timeout(newTimeout).url(localMirror()).repositoryName("origin").execute();
         w.adaptCliGitClone("origin");
         check_remote_url("origin");
         assertBranchesExist(w.git.getBranches(), "master");
         final String alternates = ".git" + File.separator + "objects" + File.separator + "info" + File.separator + "alternates";
         assertFalse("Alternates file found: " + alternates, w.exists(alternates));
+
+        setExpectedTimeoutWithAdjustedEnd(newTimeout);
     }
 
     public void test_clone_repositoryName() throws IOException, InterruptedException
@@ -863,7 +981,11 @@ public abstract class GitAPITestCase extends TestCase {
         newArea.git.prune(new RemoteConfig(new Config(), "origin"));
 
         /* Fetch should succeed */
-        newArea.git.fetch(new URIish(bare.repo.toString()), refSpecs);
+        /* Adjusted timeout will be logged, should not change test results */
+        final int newTimeout = 3;
+        newArea.git.fetch_().timeout(newTimeout).from(new URIish(bare.repo.toString()), refSpecs).execute();
+
+        setExpectedTimeoutWithAdjustedEnd(newTimeout);
     }
 
     /**
@@ -1106,6 +1228,58 @@ public abstract class GitAPITestCase extends TestCase {
         assertEquals("test 123!\n* multi-line tag message\n padded", w.git.getTagMessage("test"));
     }
 
+    public void test_create_ref() throws Exception {
+        w.init();
+        w.commitEmpty("init");
+        w.git.ref("refs/testing/testref");
+        assertTrue("test ref not created", w.cmd("git show-ref").contains("refs/testing/testref"));
+    }
+
+    public void test_delete_ref() throws Exception {
+        w.init();
+        w.commitEmpty("init");
+        w.git.ref("refs/testing/testref");
+        w.git.ref("refs/testing/anotherref");
+        w.git.deleteRef("refs/testing/testref");
+        String refs = w.cmd("git show-ref");
+        assertFalse("deleted test tag still present", refs.contains("refs/testing/testref"));
+        assertTrue("expected tag not listed", refs.contains("refs/testing/anotherref"));
+        w.git.deleteRef("refs/testing/testref");  // Double-deletes do nothing.
+    }
+
+    public void test_list_refs_with_prefix() throws Exception {
+        w.init();
+        w.commitEmpty("init");
+        w.git.ref("refs/testing/testref");
+        w.git.ref("refs/testing/nested/anotherref");
+        w.git.ref("refs/testing/nested/yetanotherref");
+        Set<String> refs = w.git.getRefNames("refs/testing/nested/");
+        assertFalse("ref testref listed", refs.contains("refs/testing/testref"));
+        assertTrue("ref anotherref not listed", refs.contains("refs/testing/nested/anotherref"));
+        assertTrue("ref yetanotherref not listed", refs.contains("refs/testing/nested/yetanotherref"));
+    }
+
+    public void test_list_refs_without_prefix() throws Exception {
+        w.init();
+        w.commitEmpty("init");
+        w.git.ref("refs/testing/testref");
+        w.git.ref("refs/testing/nested/anotherref");
+        w.git.ref("refs/testing/nested/yetanotherref");
+        Set<String> allRefs = w.git.getRefNames("");
+        assertTrue("ref testref not listed", allRefs.contains("refs/testing/testref"));
+        assertTrue("ref anotherref not listed", allRefs.contains("refs/testing/nested/anotherref"));
+        assertTrue("ref yetanotherref not listed", allRefs.contains("refs/testing/nested/yetanotherref"));
+    }
+
+    public void test_ref_exists() throws Exception {
+        w.init();
+        w.commitEmpty("init");
+        w.git.ref("refs/testing/testref");
+        assertTrue(w.git.refExists("refs/testing/testref"));
+        assertFalse(w.git.refExists("refs/testing/testref_notfound"));
+        assertFalse(w.git.refExists("refs/testing2/yetanother"));
+    }
+
     public void test_revparse_sha1_HEAD_or_tag() throws Exception {
         w.init();
         w.commitEmpty("init");
@@ -1133,6 +1307,7 @@ public abstract class GitAPITestCase extends TestCase {
 
     public void test_hasGitRepo_without_git_directory() throws Exception
     {
+        setTimeoutVisibleInCurrentTest(false);
         assertFalse("Empty directory has a Git repo", w.git.hasGitRepo());
     }
 
@@ -1347,6 +1522,61 @@ public abstract class GitAPITestCase extends TestCase {
         assertTrue("file2 does not exist and should because we updated to the top of the branch (master).", w.exists(subFile));
     }
 
+    /* Check JENKINS-23424 - inconsistent handling of modified tracked
+     * files when performing a checkout in an existing directory.
+     * CliGitAPIImpl reverts tracked files, while JGitAPIImpl does
+     * not.
+     */
+    private void base_checkout_replaces_tracked_changes(boolean defineBranch) throws Exception {
+        w.git.clone_().url(localMirror()).repositoryName("JENKINS-23424").execute();
+        w.adaptCliGitClone("JENKINS-23424");
+        if (defineBranch) {
+            w.git.checkout().branch("master").ref("JENKINS-23424/master").deleteBranchIfExist(true).execute();
+        } else {
+            w.git.checkout().ref("JENKINS-23424/master").deleteBranchIfExist(true).execute();
+        }
+
+        /* Confirm first checkout */
+        String pomContent = w.contentOf("pom.xml");
+        assertTrue("Missing jacoco ref in master pom : " + pomContent, pomContent.contains("jacoco"));
+        assertFalse("Found untracked file", w.file("untracked-file").exists());
+
+        /* Modify the pom file by adding a comment */
+        String comment = " <!-- JENKINS-23424 comment -->";
+        /* JGit implementation prior to 3.4.1 did not reset modified tracked files */
+        w.touch("pom.xml", pomContent + comment);
+        assertTrue(w.contentOf("pom.xml").contains(comment));
+
+        /* Create an untracked file.  Both implementations retain
+         * untracked files across checkout.
+         */
+        w.touch("untracked-file", comment);
+        assertTrue("Missing untracked file", w.file("untracked-file").exists());
+
+        /* Checkout should erase local modification */
+        CheckoutCommand cmd = w.git.checkout().ref("JENKINS-23424/1.4.x").deleteBranchIfExist(true);
+        if (defineBranch) {
+            cmd.branch("1.4.x");
+        }
+        cmd.execute();
+
+        /* Tracked file should not contain added comment, nor the jacoco reference */
+        pomContent = w.contentOf("pom.xml");
+        assertFalse("Found jacoco ref in 1.4.x pom : " + pomContent, pomContent.contains("jacoco"));
+        assertFalse("Found comment in 1.4.x pom", pomContent.contains(comment));
+        assertTrue("Missing untracked file", w.file("untracked-file").exists());
+    }
+
+    @Bug(23424)
+    public void test_checkout_replaces_tracked_changes() throws Exception {
+        base_checkout_replaces_tracked_changes(false);
+    }
+
+    @Bug(23424)
+    public void test_checkout_replaces_tracked_changes_with_branch() throws Exception {
+        base_checkout_replaces_tracked_changes(true);
+    }
+
     /**
      * Confirm that JENKINS-8122 is fixed in the current
      * implementation.  That bug reported that the tags from a
@@ -1401,6 +1631,7 @@ public abstract class GitAPITestCase extends TestCase {
     @NotImplementedInJGit
     public void test_trackingSubmoduleBranches() throws Exception {
         if (! ((CliGitAPIImpl)w.git).isAtLeastVersion(1,8,2,0)) {
+            setTimeoutVisibleInCurrentTest(false);
             System.err.println("git must be at least 1.8.2 to do tracking submodules.");
             return;
         }
@@ -1454,9 +1685,12 @@ public abstract class GitAPITestCase extends TestCase {
         assertTrue("file3 does not exist and should because on branch2", w.exists(subFile3));
 
         // Switch to master
-        w.git.submoduleUpdate().remoteTracking(true).useBranch(submodDir, "master").execute();
+        int newTimeout = 6;
+        w.git.submoduleUpdate().remoteTracking(true).useBranch(submodDir, "master").timeout(newTimeout).execute();
         assertFalse("file2 exists and should not because not on 'branch1'", w.exists(subFile2));
         assertFalse("file3 exists and should not because not on 'branch2'", w.exists(subFile3));
+
+        setExpectedTimeoutWithAdjustedEnd(newTimeout, 2);
     }
 
     @NotImplementedInJGit
@@ -1499,10 +1733,15 @@ public abstract class GitAPITestCase extends TestCase {
         assertTrue(workingArea.exists("dir2"));
         assertTrue(workingArea.exists("dir3"));
 
-        workingArea.git.checkout().ref("origin/master").branch("master").deleteBranchIfExist(true).sparseCheckoutPaths(null).execute();
+        int newTimeout = 3; /* Check that checkout timeout is honored */
+        workingArea.git.checkout().ref("origin/master").branch("master").deleteBranchIfExist(true).sparseCheckoutPaths(null)
+            .timeout(newTimeout)
+            .execute();
         assertTrue(workingArea.exists("dir1"));
         assertTrue(workingArea.exists("dir2"));
         assertTrue(workingArea.exists("dir3"));
+
+        setExpectedTimeoutWithAdjustedEnd(newTimeout);
     }
 
     public void test_clone_no_checkout() throws Exception {
@@ -1583,7 +1822,7 @@ public abstract class GitAPITestCase extends TestCase {
         w.cmd("git checkout tests/getSubmodules");
         w.git.submoduleInit();
 
-        assertEquals("git://github.com/puppetlabs/puppetlabs-firewall.git", w.igit().getSubmoduleUrl("modules/firewall"));
+        assertEquals("https://github.com/puppetlabs/puppetlabs-firewall.git", w.igit().getSubmoduleUrl("modules/firewall"));
 
         try {
             w.igit().getSubmoduleUrl("bogus");
@@ -1646,6 +1885,47 @@ public abstract class GitAPITestCase extends TestCase {
         }
         String all = w.cmd("git rev-list --all");
         assertEquals(all,out.toString());
+    }
+
+    public void test_revList_() throws Exception {
+        List<ObjectId> oidList = new ArrayList<ObjectId>();
+        w.init();
+        w.cmd("git pull " + localMirror());
+
+        RevListCommand revListCommand = w.git.revList_();
+        revListCommand.all();
+        revListCommand.to(oidList);
+        revListCommand.execute();
+
+        StringBuilder out = new StringBuilder();
+        for (ObjectId id : oidList) {
+            out.append(id.name()).append('\n');
+        }
+        String all = w.cmd("git rev-list --all");
+        assertEquals(all,out.toString());
+    }
+
+    public void test_revListFirstParent() throws Exception {
+        w.init();
+        w.cmd("git pull " + localMirror());
+
+        for (Branch b : w.git.getRemoteBranches()) {
+            StringBuilder out = new StringBuilder();
+            List<ObjectId> oidList = new ArrayList<ObjectId>();
+
+            RevListCommand revListCommand = w.git.revList_();
+            revListCommand.firstParent();
+            revListCommand.to(oidList);
+            revListCommand.reference(b.getName());
+            revListCommand.execute();
+
+            for (ObjectId id : oidList) {
+                out.append(id.name()).append('\n');
+            }
+
+            String all = w.cmd("git rev-list --first-parent " + b.getName());
+            assertEquals(all,out.toString());
+        }
     }
 
     public void test_revList() throws Exception {
@@ -1810,47 +2090,167 @@ public abstract class GitAPITestCase extends TestCase {
     }
 
     /**
-     * Checkout the master branch, create the specified branch
-     * based on it, add a commit to that branch, push that commit to
-     * the origin (localMirror), and checkout the master branch.
+     * Test getHeadRev with namespaces in the branch name
+     * and branch specs containing only the simple branch name.
+     *
+     * TODO: This does not work yet! Fix behaviour and enable test!
      */
-    private void pushNamespaceBranchToLocalMirror(String branchSpec) throws InterruptedException, IOException {
-        w.git.checkout("master");
-        w.git.branch(branchSpec);
-        w.git.checkout(branchSpec);
-        String filename = UUID.randomUUID().toString();
-        w.touch(filename, branchSpec);
-        w.git.add(filename);
-        w.git.commit("Initial commit for new branch " + branchSpec);
-        ObjectId head = w.head();
-        w.igit().push("origin", branchSpec + ":" + branchSpec);
-        w.git.checkout("master");
+    public void test_getHeadRev_namespaces_withSimpleBranchNames() throws Exception {
+        setTimeoutVisibleInCurrentTest(false);
+        File tempRemoteDir = temporaryDirectoryAllocator.allocate();
+        extract(new ZipFile("src/test/resources/namespaceBranchRepo.zip"), tempRemoteDir);
+        Properties commits = parseLsRemote(new File("src/test/resources/namespaceBranchRepo.ls-remote"));
+        w = clone(tempRemoteDir.getAbsolutePath());
+        final String remote = tempRemoteDir.getAbsolutePath();
+
+        final String[][] checkBranchSpecs = {};
+//TODO: Fix and enable test
+//                {
+//                {"master", commits.getProperty("refs/heads/master")},
+//                {"a_tests/b_namespace1/master", commits.getProperty("refs/heads/a_tests/b_namespace1/master")},
+//                {"a_tests/b_namespace2/master", commits.getProperty("refs/heads/a_tests/b_namespace2/master")},
+//                {"a_tests/b_namespace3/master", commits.getProperty("refs/heads/a_tests/b_namespace3/master")},
+//                {"b_namespace3/master", commits.getProperty("refs/heads/b_namespace3/master")}
+//                };
+
+        for(String[] branch : checkBranchSpecs) {
+            final ObjectId objectId = ObjectId.fromString(branch[1]);
+            final String branchName = branch[0];
+            check_getHeadRev(remote, branchName, objectId);
+            check_getHeadRev(remote, "remotes/origin/" + branchName, objectId);
+            check_getHeadRev(remote, "refs/heads/" + branchName, objectId);
+        }
     }
-    
+
     /**
-     * Test getHeadRev with namespaces in the branch name.
+     * Test getHeadRev with namespaces in the branch name
+     * and branch specs starting with "refs/heads/".
      */
-    public void test_getHeadRev_namespaces() throws Exception {
-        final String[] namespaceBranches = {"tests/namespace1/master", "tests/namespace2/master", "tests/namespace3/master"};
-        if (w.git.getHeadRev(localMirror(), "remotes/origin/tests/namespace1/master") == null) {
-            /* create branches for tests in localMirror */
-            w = clone(localMirror());
-            for(String branch : namespaceBranches) {
-                pushNamespaceBranchToLocalMirror(branch);
+    public void test_getHeadRev_namespaces_withRefsHeads() throws Exception {
+        File tempRemoteDir = temporaryDirectoryAllocator.allocate();
+        extract(new ZipFile("src/test/resources/namespaceBranchRepo.zip"), tempRemoteDir);
+        Properties commits = parseLsRemote(new File("src/test/resources/namespaceBranchRepo.ls-remote"));
+        w = clone(tempRemoteDir.getAbsolutePath());
+        final String remote = tempRemoteDir.getAbsolutePath();
+
+        final String[][] checkBranchSpecs = {
+                {"refs/heads/master", commits.getProperty("refs/heads/master")},
+                {"refs/heads/a_tests/b_namespace1/master", commits.getProperty("refs/heads/a_tests/b_namespace1/master")},
+                {"refs/heads/a_tests/b_namespace2/master", commits.getProperty("refs/heads/a_tests/b_namespace2/master")},
+                {"refs/heads/a_tests/b_namespace3/master", commits.getProperty("refs/heads/a_tests/b_namespace3/master")},
+                {"refs/heads/b_namespace3/master", commits.getProperty("refs/heads/b_namespace3/master")}
+                };
+
+        for(String[] branch : checkBranchSpecs) {
+            final ObjectId objectId = ObjectId.fromString(branch[1]);
+            final String branchName = branch[0];
+            check_getHeadRev(remote, branchName, objectId);
+        }
+    }
+
+    /**
+     * Test getHeadRev with branch names which SHOULD BE reserved by Git, but ARE NOT.<br/>
+     * E.g. it is possible to create the following LOCAL (!) branches:<br/>
+     * <ul>
+     *   <li> origin/master
+     *   <li> remotes/origin/master
+     *   <li> refs/heads/master
+     *   <li> refs/remotes/origin/master
+     * </ul>
+     *
+     * TODO: This does not work yet! Fix behaviour and enable test!
+     */
+    public void test_getHeadRev_reservedBranchNames() throws Exception {
+        /* REMARK: Local branch names in this test are called exactly like follows!
+         *   e.g. origin/master means the branch is called "origin/master", it does NOT mean master branch in remote "origin".
+         *   or refs/heads/master means branch called "refs/heads/master" ("refs/heads/refs/heads/master" in the end).
+         */
+
+        setTimeoutVisibleInCurrentTest(false);
+        File tempRemoteDir = temporaryDirectoryAllocator.allocate();
+        extract(new ZipFile("src/test/resources/specialBranchRepo.zip"), tempRemoteDir);
+        Properties commits = parseLsRemote(new File("src/test/resources/specialBranchRepo.ls-remote"));
+        w = clone(tempRemoteDir.getAbsolutePath());
+
+        /*
+         * The first entry in the String[2] is the branch name (as specified in the job config).
+         * The second entry is the expected commit.
+         */
+        final String[][] checkBranchSpecs = {};
+//TODO: Fix and enable test
+//                {
+//                {"master", commits.getProperty("refs/heads/master")},
+//                {"origin/master", commits.getProperty("refs/heads/master")},
+//                {"remotes/origin/master", commits.getProperty("refs/heads/master")},
+//                {"refs/remotes/origin/master", commits.getProperty("refs/heads/refs/remotes/origin/master")},
+//                {"refs/heads/origin/master", commits.getProperty("refs/heads/origin/master")},
+//                {"refs/heads/master", commits.getProperty("refs/heads/master")},
+//                {"refs/heads/refs/heads/master", commits.getProperty("refs/heads/refs/heads/master")},
+//                {"refs/heads/refs/heads/refs/heads/master", commits.getProperty("refs/heads/refs/heads/refs/heads/master")},
+//                {"refs/tags/master", commits.getProperty("refs/tags/master^{}")}
+//                };
+        for(String[] branch : checkBranchSpecs) {
+          check_getHeadRev(tempRemoteDir.getAbsolutePath(), branch[0], ObjectId.fromString(branch[1]));
+        }
+    }
+
+    private Properties parseLsRemote(File file) throws IOException
+    {
+        Properties properties = new Properties();
+        Pattern pattern = Pattern.compile("([a-f0-9]{40})\\s*(.*)");
+        for(Object lineO : FileUtils.readLines(file)) {
+            String line = ((String)lineO).trim();
+            Matcher matcher = pattern.matcher(line);
+            if(matcher.matches()) {
+                properties.setProperty(matcher.group(2), matcher.group(1));
+            } else {
+                System.err.println("ls-remote pattern does not match '" + line + "'");
             }
         }
-        Map<String, ObjectId> heads = w.git.getHeadRev(localMirror());
-        for(String branch : namespaceBranches) {
-            check_getHeadRev(heads, "remotes/origin/"+branch, "refs/heads/"+branch);
+        return properties;
+    }
+
+    private void extract(ZipFile zipFile, File outputDir) throws IOException
+    {
+        Enumeration<? extends ZipEntry> entries = zipFile.entries();
+        while (entries.hasMoreElements()) {
+            ZipEntry entry = entries.nextElement();
+            File entryDestination = new File(outputDir,  entry.getName());
+            entryDestination.getParentFile().mkdirs();
+            if (entry.isDirectory())
+                entryDestination.mkdirs();
+            else {
+                InputStream in = zipFile.getInputStream(entry);
+                OutputStream out = new FileOutputStream(entryDestination);
+                IOUtils.copy(in, out);
+                IOUtils.closeQuietly(in);
+                IOUtils.closeQuietly(out);
+            }
         }
     }
-    
-    private void check_getHeadRev(Map<String, ObjectId> heads, String branchSpec, String expectedHeadSpec) throws Exception
+
+    private void check_getHeadRev(String remote, String branchSpec, ObjectId expectedObjectId) throws Exception
     {
-      ObjectId actualObjectId = w.git.getHeadRev(localMirror(), branchSpec);
-      ObjectId expectedObjectId = heads.get(expectedHeadSpec);
-      assertNotNull(String.format("ObjectId is null for expectedHeadSpec '%s'", expectedHeadSpec), expectedObjectId);
-      assertEquals("Actual ObjectId differs from expected one. Heads is " + heads, expectedObjectId, actualObjectId);
+        ObjectId actualObjectId = w.git.getHeadRev(remote, branchSpec);
+        assertNotNull(String.format("Expected ObjectId is null expectedObjectId '%s', remote '%s', branchSpec '%s'.",
+                    expectedObjectId, remote, branchSpec), expectedObjectId);
+        assertNotNull(String.format("Actual ObjectId is null. expectedObjectId '%s', remote '%s', branchSpec '%s'.",
+                    expectedObjectId, remote, branchSpec), actualObjectId);
+        assertEquals(String.format("Actual ObjectId differs from expected one for branchSpec '%s', remote '%s':\n" +
+                "Actual %s,\nExpected %s\n", branchSpec, remote,
+                StringUtils.join(getBranches(actualObjectId), ", "),
+                StringUtils.join(getBranches(expectedObjectId), ", ")),
+                expectedObjectId, actualObjectId);
+    }
+
+    private List<Branch> getBranches(ObjectId objectId) throws GitException, InterruptedException
+    {
+        List<Branch> matches = new ArrayList<Branch>();
+        Set<Branch> branches = w.git.getBranches();
+        for(Branch branch : branches) {
+            if(branch.getSHA1().equals(objectId)) matches.add(branch);
+        }
+        return unmodifiableList(matches);
     }
 
     private void check_headRev(String repoURL, ObjectId expectedId) throws InterruptedException, IOException {
@@ -2546,5 +2946,16 @@ public abstract class GitAPITestCase extends TestCase {
         w.init();
         w.cmd("git config --add core.longpaths false");
         check_longpaths(false);
+    }
+
+    @NotImplementedInJGit
+    /* Not implemented in JGit because it is not needed there */
+    public void test_git_ssh_executable_found_on_windows() throws Exception {
+        setTimeoutVisibleInCurrentTest(false);
+        if (!SystemUtils.IS_OS_WINDOWS) {
+            return;
+        }
+
+        assertTrue("ssh.exe not found", w.cgit().getSSHExecutable().exists());
     }
 }

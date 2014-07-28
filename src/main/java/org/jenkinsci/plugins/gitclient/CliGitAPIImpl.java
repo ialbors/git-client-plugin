@@ -94,6 +94,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
     private static final long serialVersionUID = 1;
     static final String SPARSE_CHECKOUT_FILE_DIR = ".git/info";
     static final String SPARSE_CHECKOUT_FILE_PATH = ".git/info/sparse-checkout";
+    static final String TIMEOUT_LOG_PREFIX = " # timeout=";
     transient Launcher launcher;
     TaskListener listener;
     String gitExe;
@@ -127,7 +128,15 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
         int gitBugfixVersion = 0;
 
         try {
-            String[] fields = version.split(" ")[2].split("\\.");
+            /*
+             * msysgit adds one more term to the version number. So
+             * instead of Major.Minor.Rev.Bugfix, it displays
+             * something like Major.Minor.Rev.msysgit.BugFix. This
+             * removes the inserted term from the version string
+             * before parsing.
+             */
+
+            String[] fields = version.split(" ")[2].replaceAll("msysgit.", "").split("\\.");
 
             gitMajorVersion  = Integer.parseInt(fields[0]);
             gitMinorVersion  = (fields.length > 1) ? Integer.parseInt(fields[1]) : 0;
@@ -317,7 +326,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
             String origin = "origin";
             String reference;
             boolean shallow,shared;
-			Integer timeout;
+            Integer timeout;
 
             public CloneCommand url(String url) {
                 this.url = url;
@@ -1250,26 +1259,99 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
         return ssh;
     }
 
+    private String getPathToExe(String userGitExe) {
+        userGitExe = userGitExe.toLowerCase();
+
+        String cmd;
+        String exe;
+        if (userGitExe.endsWith(".exe")) {
+            cmd = userGitExe.replace(".exe", ".cmd");
+            exe = userGitExe;
+        } else if (userGitExe.endsWith(".cmd")) {
+            cmd = userGitExe;
+            exe = userGitExe.replace(".cmd", ".exe");
+        } else {
+            cmd = userGitExe + ".cmd";
+            exe = userGitExe + ".exe";
+        }
+
+        String[] pathDirs = System.getenv("PATH").split(File.pathSeparator);
+
+        for (String pathDir : pathDirs) {
+            File exeFile = new File(pathDir, exe);
+            if (exeFile.exists()) {
+                return exeFile.getAbsolutePath();
+            }
+            File cmdFile = new File(pathDir, cmd);
+            if (cmdFile.exists()) {
+                return cmdFile.getAbsolutePath();
+            }
+        }
+
+        return null;
+    }
+
+    private File getFileFromEnv(String envVar, String suffix) {
+        String envValue = System.getenv(envVar);
+        if (envValue == null) {
+            return null;
+        }
+        return new File(envValue + suffix);       
+    }
+
+    private File getSSHExeFromGitExeParentDir(String userGitExe) {
+        String parentPath = new File(userGitExe).getParent();
+        if (parentPath == null) {
+            return null;
+        }
+        return new File(parentPath + "\\ssh.exe");
+    }
+
+    /* package */ File getSSHExecutable() {
+        // First check the GIT_SSH environment variable
+        File sshexe = getFileFromEnv("GIT_SSH", "");
+        if (sshexe != null && sshexe.exists()) {
+            return sshexe;
+        }
+
+        // Check Program Files
+        sshexe = getFileFromEnv("ProgramFiles", "\\Git\\bin\\ssh.exe");
+        if (sshexe != null && sshexe.exists()) {
+            return sshexe;
+        }
+
+        // Check Program Files(x86) for 64 bit computer
+        sshexe = getFileFromEnv("ProgramFiles(x86)", "\\Git\\bin\\ssh.exe");
+        if (sshexe != null && sshexe.exists()) {
+            return sshexe;
+        }
+
+        // Search for an ssh.exe near the git executable.
+        sshexe = getSSHExeFromGitExeParentDir(gitExe);
+        if (sshexe != null && sshexe.exists()) {
+            return sshexe;
+        }
+
+        // Search for git on the PATH, then look near it
+        String gitPath = getPathToExe(gitExe);
+        if (gitPath != null) {
+            // In case we are using msysgit from the cmd directory
+            // instead of the bin directory, replace cmd with bin in
+            // the path while trying to find ssh.exe.
+            sshexe = getSSHExeFromGitExeParentDir(gitPath.replace("/cmd/", "/bin/").replace("\\cmd\\", "\\bin\\"));
+            if (sshexe != null && sshexe.exists()) {
+                return sshexe;
+            }
+        }
+
+        throw new RuntimeException("ssh executable not found. The git plugin only supports official git client http://git-scm.com/download/win");
+    }
 
     private File createWindowsGitSSH(File key) throws IOException {
         File ssh = File.createTempFile("ssh", ".bat");
-        // windows git installer place C:\Program Files\Git\cmd\git.exe in PATH
 
-        String progFiles = System.getenv("ProgramFiles");
-        String sshPath = "/Git/bin/ssh.exe";
-        File sshexe = new File(progFiles + sshPath);
-        if (!sshexe.exists()) {
-          // try the (x86) version for 64-bit Windows builds
-          sshexe = new File(progFiles + " (x86)" + sshPath);
-        }
-        if (!sshexe.exists()) {
-		  // try the ssh.exe next to known git.exe
-		  sshexe = new File(new File(gitExe).getParentFile(), "ssh.exe");
-        }
+        File sshexe = getSSHExecutable();
 
-        if (!sshexe.exists()) {
-            throw new RuntimeException("git plugin only support official git client http://git-scm.com/download/win");
-        }
         PrintWriter w = new PrintWriter(ssh);
         w .println("@echo off");
         w .println("\"" + sshexe.getAbsolutePath() + "\" -i \"" + key.getAbsolutePath() +"\" -o StrictHostKeyChecking=no %* ");
@@ -1314,7 +1396,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
         String command = gitExe + " " + StringUtils.join(args.toCommandArray(), " ");
         try {
             args.prepend(gitExe);
-            listener.getLogger().println(" > " + command);
+            listener.getLogger().println(" > " + command + (timeout != null ? TIMEOUT_LOG_PREFIX + timeout : ""));
             Launcher.ProcStarter p = launcher.launch().cmds(args.toCommandArray()).
                     envs(environment).stdout(fos).stderr(err);
             if (workDir != null) p.pwd(workDir);
@@ -1448,6 +1530,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
             public String branch;
             public boolean deleteBranch;
             public List<String> sparseCheckoutPaths = Collections.emptyList();
+            public Integer timeout;
 
             public CheckoutCommand ref(String ref) {
                 this.ref = ref;
@@ -1469,6 +1552,11 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                 return this;
             }
 
+            public CheckoutCommand timeout(Integer timeout) {
+                this.timeout = timeout;
+                return this;
+            }
+
             public void execute() throws GitException, InterruptedException {
                 try {
 
@@ -1486,10 +1574,16 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                             }
                         }
                     }
-                    if (branch != null)
-                        launchCommand("checkout", "-b", branch, ref);
-                    else
-                        launchCommand("checkout", "-f", ref);
+                    ArgumentListBuilder args = new ArgumentListBuilder();
+                    args.add("checkout");
+                    if (branch != null) {
+                        args.add("-b");
+                        args.add(branch);
+                    } else {
+                        args.add("-f");
+                    }
+                    args.add(ref);
+                    launchCommandIn(args, workspace, environment, timeout);
                 } catch (GitException e) {
                     if (Pattern.compile("index\\.lock").matcher(e.getMessage()).find()) {
                         throw new GitLockFailedException("Could not lock repository. Please try again", e);
@@ -1606,12 +1700,82 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
         return entries;
     }
 
+    public RevListCommand revList_() {
+        return new RevListCommand() {
+            public boolean all;
+            public boolean firstParent;
+            public String refspec;
+            public List<ObjectId> out;
+
+            public RevListCommand all() {
+                this.all = true;
+                return this;
+            }
+
+            public RevListCommand firstParent() {
+                this.firstParent = true;
+                return this;
+            }
+
+            public RevListCommand to(List<ObjectId> revs){
+                this.out = revs;
+                return this;
+            }
+
+            public RevListCommand reference(String reference){
+                this.refspec = reference;
+                return this;
+            }
+
+            public void execute() throws GitException, InterruptedException {
+                ArgumentListBuilder args = new ArgumentListBuilder("rev-list");
+
+                if (firstParent) {
+                   args.add("--first-parent");
+                }
+
+                if (all) {
+                   args.add("--all");
+                }
+
+                if (refspec != null) {
+                   args.add(refspec);
+                }
+
+                String result = launchCommand(args);
+                BufferedReader rdr = new BufferedReader(new StringReader(result));
+                String line;
+
+                try {
+                    while ((line = rdr.readLine()) != null) {
+                        // Add the SHA1
+                        out.add(ObjectId.fromString(line));
+                    }
+                } catch (IOException e) {
+                    throw new GitException("Error parsing rev list", e);
+                }
+            }
+        };
+    }
+
+
+
     public List<ObjectId> revListAll() throws GitException, InterruptedException {
-        return doRevList("--all");
+        List<ObjectId> oidList = new ArrayList<ObjectId>();
+        RevListCommand revListCommand = revList_();
+        revListCommand.all();
+        revListCommand.to(oidList);
+        revListCommand.execute();
+        return oidList;
     }
 
     public List<ObjectId> revList(String ref) throws GitException, InterruptedException {
-        return doRevList(ref);
+        List<ObjectId> oidList = new ArrayList<ObjectId>();
+        RevListCommand revListCommand = revList_();
+        revListCommand.reference(ref);
+        revListCommand.to(oidList);
+        revListCommand.execute();
+        return oidList;
     }
 
     private List<ObjectId> doRevList(String... extraArgs) throws GitException, InterruptedException {
@@ -1756,6 +1920,56 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
         return out.substring(tagName.length()).replaceAll("(?m)(^    )", "").trim();
     }
 
+    public void ref(String refName) throws GitException, InterruptedException {
+	refName = refName.replace(' ', '_');
+	try {
+	    launchCommand("update-ref", refName, "HEAD");
+	} catch (GitException e) {
+	    throw new GitException("Could not apply ref " + refName, e);
+	}
+    }
+
+    public boolean refExists(String refName) throws GitException, InterruptedException {
+	refName = refName.replace(' ', '_');
+	try {
+	    launchCommand("show-ref", refName);
+	    return true; // If show-ref returned zero, ref exists.
+	} catch (GitException e) {
+	    return false; // If show-ref returned non-zero, ref doesn't exist.
+	}
+    }
+
+    public void deleteRef(String refName) throws GitException, InterruptedException {
+	refName = refName.replace(' ', '_');
+	try {
+	    launchCommand("update-ref", "-d", refName);
+	} catch (GitException e) {
+	    throw new GitException("Could not delete ref " + refName, e);
+	}
+    }
+
+    public Set<String> getRefNames(String refPrefix) throws GitException, InterruptedException {
+	if (refPrefix.isEmpty()) {
+	    refPrefix = "refs/";
+	} else {
+	    refPrefix = refPrefix.replace(' ', '_');
+	}
+	try {
+	    String result = launchCommand("for-each-ref", "--format=%(refname)", refPrefix);
+	    Set<String> refs = new HashSet<String>();
+	    BufferedReader rdr = new BufferedReader(new StringReader(result));
+	    String ref;
+	    while ((ref = rdr.readLine()) != null) {
+		refs.add(ref);
+	    }
+	    return refs;
+	} catch (GitException e) { // Should be a multi-catch statement in the future.
+	    throw new GitException("Error retrieving refs with prefix " + refPrefix, e);
+	} catch (IOException e) {
+	    throw new GitException("Error retrieving refs with prefix " + refPrefix, e);
+	}
+    }
+
     public Map<String, ObjectId> getHeadRev(String url) throws GitException, InterruptedException {
         ArgumentListBuilder args = new ArgumentListBuilder("ls-remote");
         args.add("-h");
@@ -1778,7 +1992,9 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
     public ObjectId getHeadRev(String url, String branchSpec) throws GitException, InterruptedException {
         final String branchName = extractBranchNameFromBranchSpec(branchSpec);
         ArgumentListBuilder args = new ArgumentListBuilder("ls-remote");
-        args.add("-h");
+        if(!branchName.startsWith("refs/tags/")) {
+            args.add("-h");
+        }
 
         StandardCredentials cred = credentials.get(url);
         if (cred == null) cred = defaultCredentials;
@@ -1922,7 +2138,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                 }
             }
             if(shouldProxy) {
-                final HttpHost proxyHost = new HttpHost(proxy.name, proxy.port); 
+                final HttpHost proxyHost = new HttpHost(proxy.name, proxy.port);
                 final HttpRoutePlanner routePlanner = new DefaultProxyRoutePlanner(proxyHost);
                 clientBuilder.setRoutePlanner(routePlanner);
                 if (proxy.getUserName() != null && proxy.getPassword() != null)
@@ -1963,7 +2179,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
         try {
             for (String candidate : candidates) {
                 HttpGet get = new HttpGet(candidate);
-                
+
                 final CloseableHttpResponse response = client.execute(get);
                 try{
                     status = response.getStatusLine().getStatusCode();
