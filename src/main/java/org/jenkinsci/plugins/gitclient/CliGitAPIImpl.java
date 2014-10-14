@@ -102,6 +102,20 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
     private Map<String, StandardCredentials> credentials = new HashMap<String, StandardCredentials>();
     private StandardCredentials defaultCredentials;
 
+    private void warnIfWindowsTemporaryDirNameHasSpaces() {
+        if (!Functions.isWindows()) {
+            return;
+        }
+        String[] varsToCheck = {"TEMP", "TMP"};
+        for (String envVar : varsToCheck) {
+            String value = environment.get(envVar, "C:\\Temp");
+            if (value.contains(" ")) {
+                listener.getLogger().println("env " + envVar + "='" + value + "' contains an embedded space."
+                        + " Some msysgit versions may fail credential related operations.");
+            }
+        }
+    }
+
     // AABBCCDD where AA=major, BB=minor, CC=rev, DD=bugfix
     private long gitVersion = 0;
     private long computeVersionFromBits(int major, int minor, int rev, int bugfix) {
@@ -262,6 +276,8 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                 if (prune) args.add("--prune");
 
                 if (shallow) args.add("--depth=1");
+
+                warnIfWindowsTemporaryDirNameHasSpaces();
 
                 launchCommandWithCredentials(args, workspace, cred, url, timeout);
             }
@@ -479,6 +495,9 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                 args.add("init", workspace);
 
                 if(bare) args.add("--bare");
+
+                warnIfWindowsTemporaryDirNameHasSpaces();
+
                 try {
                     launchCommand(args);
                 } catch (GitException e) {
@@ -1184,10 +1203,21 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                     }
                     if(shouldProxy) {
                         env = new EnvVars(env);
-                        String http_proxy = "http://" + proxy.name + ":" + proxy.port + "/";
-                        listener.getLogger().println("Setting http proxy: " + http_proxy);
-                        env.put("http_proxy", http_proxy);
-                        env.put("https_proxy", http_proxy);
+                        listener.getLogger().println("Setting http proxy: " + proxy.name + ":" + proxy.port);
+                        String userInfo = null;
+                        if (proxy.getUserName() != null) {
+                            userInfo = proxy.getUserName();
+                            if (proxy.getPassword() != null) {
+                                userInfo += ":" + proxy.getPassword();
+                            }
+                        }
+                        try {
+                            URI http_proxy = new URI("http", userInfo, proxy.name, proxy.port, null, null, null);
+                            env.put("http_proxy", http_proxy.toString());
+                            env.put("https_proxy", http_proxy.toString());
+                        } catch (URISyntaxException ex) {
+                            throw new GitException("Failed to create http proxy uri", ex);
+                        }
                     }
                 }
             }
@@ -1893,6 +1923,27 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
         return new FilePath(workspace);
     }
 
+    public Set<String> getRemoteTagNames(String tagPattern) throws GitException {
+        try {
+            ArgumentListBuilder args = new ArgumentListBuilder();
+            args.add("ls-remote", "--tags");
+            args.add(getRemoteUrl("origin"));
+            if (tagPattern != null)
+                args.add(tagPattern);
+            String result = launchCommandIn(args, workspace);
+            Set<String> tags = new HashSet<String>();
+            BufferedReader rdr = new BufferedReader(new StringReader(result));
+            String tag;
+            while ((tag = rdr.readLine()) != null) {
+                // Add the tag name without the SHA1
+                tags.add(tag.replaceFirst(".*refs/tags/", ""));
+            }
+            return tags;
+        } catch (Exception e) {
+            throw new GitException("Error retrieving remote tag names", e);
+        }
+    }
+
     public Set<String> getTagNames(String tagPattern) throws GitException {
         try {
             ArgumentListBuilder args = new ArgumentListBuilder();
@@ -2000,7 +2051,11 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
         if (cred == null) cred = defaultCredentials;
 
         args.add(url);
-        args.add(branchName);
+        if (branchName.startsWith("refs/tags/")) {
+            args.add(branchName+"^{}"); // JENKINS-23299 - tag SHA1 needs to be converted to commit SHA1
+        } else {
+            args.add(branchName);
+        }
         String result = launchCommandWithCredentials(args, null, cred, url);
         return result.length()>=40 ? ObjectId.fromString(result.substring(0, 40)) : null;
     }

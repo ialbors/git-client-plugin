@@ -24,6 +24,7 @@ import hudson.plugins.git.IndexEntry;
 import hudson.remoting.VirtualChannel;
 import hudson.util.IOUtils;
 import junit.framework.TestCase;
+import static org.junit.Assert.assertNotEquals;
 
 import org.apache.commons.io.FileUtils;
 import org.eclipse.jgit.internal.storage.file.FileRepository;
@@ -1127,6 +1128,41 @@ public abstract class GitAPITestCase extends TestCase {
         assertEquals(3, branches.size());
     }
 
+    public void test_remote_list_tags_with_filter() throws Exception {
+        WorkingArea r = new WorkingArea();
+        r.init();
+        r.commitEmpty("init");
+        r.tag("test");
+        r.tag("another_test");
+        r.tag("yet_another");
+
+        w.init();
+        w.cmd("git remote add origin " + r.repoPath());
+        w.cmd("git fetch origin");
+        Set<String> local_tags = w.git.getTagNames("*test");
+        Set<String> tags = w.git.getRemoteTagNames("*test");
+        assertTrue("expected tag test not listed", tags.contains("test"));
+        assertTrue("expected tag another_test not listed", tags.contains("another_test"));
+        assertFalse("unexpected yet_another tag listed", tags.contains("yet_another"));
+    }
+
+    public void test_remote_list_tags_without_filter() throws Exception {
+        WorkingArea r = new WorkingArea();
+        r.init();
+        r.commitEmpty("init");
+        r.tag("test");
+        r.tag("another_test");
+        r.tag("yet_another");
+
+        w.init();
+        w.cmd("git remote add origin " + r.repoPath());
+        w.cmd("git fetch origin");
+        Set<String> allTags = w.git.getRemoteTagNames(null);
+        assertTrue("tag 'test' not listed", allTags.contains("test"));
+        assertTrue("tag 'another_test' not listed", allTags.contains("another_test"));
+        assertTrue("tag 'yet_another' not listed", allTags.contains("yet_another"));
+    }
+
     public void test_list_branches_containing_ref() throws Exception {
         w.init();
         w.commitEmpty("init");
@@ -1152,13 +1188,43 @@ public abstract class GitAPITestCase extends TestCase {
         }
     }
 
+    @Bug(23299)
     public void test_create_tag() throws Exception {
         w.init();
+        String gitDir = w.repoPath() + File.separator + ".git";
         w.commitEmpty("init");
+        ObjectId init = w.git.revParse("HEAD"); // Remember SHA1 of init commit
         w.git.tag("test", "this is a tag");
+
+        /* JGit seems to have the better behavior in this case, always
+         * returning the SHA1 of the commit. Most users are using
+         * command line git, so the difference is retained in command
+         * line git for compatibility with any legacy command line git
+         * use cases which depend on returning the SHA-1 of the
+         * annotated tag rather than the SHA-1 of the commit to which
+         * the annotated tag points.
+         */
+        ObjectId testTag = w.git.getHeadRev(gitDir, "test"); // Remember SHA1 of annotated test tag
+        if (w.git instanceof JGitAPIImpl) {
+            assertEquals("Annotated tag does not match SHA1", init, testTag);
+        } else {
+            assertNotEquals("Annotated tag unexpectedly equals SHA1", init, testTag);
+        }
+
+        /* Because refs/tags/test syntax is more specific than "test",
+         * and because the more specific syntax was only introduced in
+         * more recent git client plugin versions (like 1.10.0 and
+         * later), the CliGit and JGit behavior are kept the same here
+         * in order to fix JENKINS-23299.
+         */
+        ObjectId testTagCommit = w.git.getHeadRev(gitDir, "refs/tags/test"); // SHA1 of commit identified by test tag
+        assertEquals("Annotated tag doesn't match queried commit SHA1", init, testTagCommit);
+        assertEquals(init, w.git.revParse("test")); // SHA1 of commit identified by test tag
+        assertEquals(init, w.git.revParse("refs/tags/test")); // SHA1 of commit identified by test tag
         assertTrue("test tag not created", w.cmd("git tag").contains("test"));
         String message = w.cmd("git tag -l -n1");
         assertTrue("unexpected test tag message : " + message, message.contains("this is a tag"));
+        assertNull(w.git.getHeadRev(gitDir, "not-a-valid-tag")); // Confirm invalid tag returns null
     }
 
     public void test_delete_tag() throws Exception {
@@ -2010,8 +2076,30 @@ public abstract class GitAPITestCase extends TestCase {
         assertFalse("file1 exists before merge", w.exists("file1"));
         assertEquals("Wrong merge-base branch1 branch2", base, w.igit().mergeBase(branch1, branch2));
 
+        String badSHA1 = "15c80fb1567f0e88ca855c69e3f17425d515a188";
+        ObjectId badBase = ObjectId.fromString(badSHA1);
+        try {
+            assertNull("Base unexpected for bad SHA1", w.igit().mergeBase(branch1, badBase));
+            assertTrue("Exception not thrown by CliGit", w.git instanceof CliGitAPIImpl);
+        } catch (GitException moa) {
+            assertFalse("Exception thrown by CliGit", w.git instanceof CliGitAPIImpl);
+            assertTrue("Exception message didn't mention " + badBase.toString(), moa.getMessage().contains(badSHA1));
+        }
+        try {
+            assertNull("Base unexpected for bad SHA1", w.igit().mergeBase(badBase, branch1));
+            assertTrue("Exception not thrown by CliGit", w.git instanceof CliGitAPIImpl);
+        } catch (GitException moa) {
+            assertFalse("Exception thrown by CliGit", w.git instanceof CliGitAPIImpl);
+            assertTrue("Exception message didn't mention " + badBase.toString(), moa.getMessage().contains(badSHA1));
+        }
+
         w.igit().merge("branch1");
         assertTrue("file1 does not exist after merge", w.exists("file1"));
+
+        w.cmd("git checkout --orphan newroot"); // Create an indepedent root
+        w.commitEmpty("init-on-newroot");
+        final ObjectId newRootCommit = w.head();
+        assertNull("Common root not expected", w.igit().mergeBase(newRootCommit, branch1));
 
         final String remoteUrl = "ssh://mwaite.example.com//var/lib/git/mwaite/jenkins/git-client-plugin.git";
         w.git.setRemoteUrl("origin", remoteUrl);
@@ -2053,10 +2141,16 @@ public abstract class GitAPITestCase extends TestCase {
         assertTrue("No SHA1 in " + writer.toString(), writer.toString().contains(sha1));
     }
 
+    @Bug(23299)
     public void test_getHeadRev() throws Exception {
         Map<String, ObjectId> heads = w.git.getHeadRev(remoteMirrorURL);
         ObjectId master = w.git.getHeadRev(remoteMirrorURL, "refs/heads/master");
         assertEquals("URL is " + remoteMirrorURL + ", heads is " + heads, master, heads.get("refs/heads/master"));
+
+        /* Test with a specific tag reference - JENKINS-23299 */
+        ObjectId knownTag = w.git.getHeadRev(remoteMirrorURL, "refs/tags/git-client-1.10.0");
+        ObjectId expectedTag = ObjectId.fromString("1fb23708d6b639c22383c8073d6e75051b2a63aa"); // commit SHA1
+        assertEquals("Wrong SHA1 for git-client-1.10.0 tag", expectedTag, knownTag);
     }
 
     /**
