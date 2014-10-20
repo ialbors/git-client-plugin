@@ -8,7 +8,7 @@
 
   <groupId>org.jenkins-ci.plugins</groupId>
   <artifactId>git-client</artifactId>
-  <version>1.10.3-ialbors-SNAPSHOT</version>
+  <version>1.11.1-ialbors-SNAPSHOT</version>
   <packaging>hpi</packaging>
   <name>Jenkins GIT client plugin</name>
   <description>Utility plugin for Git support in Jenkins</description>
@@ -53,13 +53,23 @@
     <maven-site-plugin.version>3.3</maven-site-plugin.version>
     <!-- End of updated versions required for "mvn site" -->
     <maven-surefire-plugin.version>2.17</maven-surefire-plugin.version>
+    <jgit.version>3.5.1.201410131835-r-ialbors</jgit.version>
   </properties>
 
   <dependencies>
     <dependency>
       <groupId>org.eclipse.jgit</groupId>
       <artifactId>org.eclipse.jgit</artifactId>
-      <version>3.5.1.201410131835-r-ialbors</version>
+      <version>${jgit.version}</version>
+    </dependency>
+    <dependency>
+      <!-- Include jgit http server so that git-userContent and other
+           plugins can depend on git-client-plugin rather than
+           including their own JGit http server version. Avoid class
+           loader mismatches and bugs like JENKINS-21756 -->
+      <groupId>org.eclipse.jgit</groupId>
+      <artifactId>org.eclipse.jgit.http.server</artifactId>
+      <version>${jgit.version}</version>
     </dependency>
     <dependency>
       <groupId>junit</groupId>
@@ -70,7 +80,7 @@
     <dependency>
       <groupId>org.jenkins-ci.plugins</groupId>
       <artifactId>git-server</artifactId>
-      <version>1.3</version>
+      <version>1.4</version>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -88,7 +98,7 @@
     <dependency>
       <groupId>org.jenkins-ci.plugins</groupId>
       <artifactId>ssh-credentials</artifactId>
-      <version>1.9</version>
+      <version>1.10</version>
     </dependency>
     <dependency>
       <groupId>org.apache.httpcomponents</groupId>

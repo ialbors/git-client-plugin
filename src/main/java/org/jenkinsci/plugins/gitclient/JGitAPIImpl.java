@@ -749,6 +749,9 @@ public class JGitAPIImpl extends LegacyCompatibleGitAPIImpl {
             throw new GitException(e);
         } catch (URISyntaxException e) {
             throw new GitException(e);
+        } catch (IllegalStateException e) {
+            // "Cannot open session, connection is not authenticated." from com.trilead.ssh2.Connection.openSession
+            throw new GitException(e);
         }
         return null;
     }
