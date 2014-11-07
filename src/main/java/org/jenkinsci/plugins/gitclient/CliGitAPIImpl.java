@@ -400,6 +400,16 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                 // this allows launchCommandWithCredentials() to pass credentials via a local gitconfig
 
                 init_().workspace(workspace.getAbsolutePath()).execute();
+
+                if (shared) {
+                    if (reference == null || reference.isEmpty()) {
+                        // we use origin as reference
+                        reference = url;
+                    } else {
+                        listener.getLogger().println("[WARNING] Both shared and reference is used, shared is ignored.");
+                    }
+                }
+
                 if (reference != null && !reference.isEmpty()) {
                     File referencePath = new File(reference);
                     if (!referencePath.exists())
@@ -428,9 +438,6 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                         }
                     }
                 }
-
-                if (shared)
-                    throw new UnsupportedOperationException("shared is unsupported, and considered dangerous");
 
                 RefSpec refSpec = new RefSpec("+refs/heads/*:refs/remotes/"+origin+"/*");
                 fetch_().from(urIish, Collections.singletonList(refSpec))
@@ -1324,7 +1331,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
         if (envValue == null) {
             return null;
         }
-        return new File(envValue + suffix);       
+        return new File(envValue + suffix);
     }
 
     private File getSSHExeFromGitExeParentDir(String userGitExe) {
@@ -1451,6 +1458,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
             public URIish remote;
             public String refspec;
             public boolean force;
+            public boolean tags;
             public Integer timeout;
 
             public PushCommand to(URIish remote) {
@@ -1465,6 +1473,11 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
 
             public PushCommand force() {
                 this.force = true;
+                return this;
+            }
+
+            public PushCommand tags(boolean tags) {
+                this.tags = tags;
                 return this;
             }
 
@@ -1483,6 +1496,10 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
 
                 if (force) {
                     args.add("-f");
+                }
+
+                if (tags) {
+                    args.add("--tags");
                 }
 
                 StandardCredentials cred = credentials.get(remote.toPrivateString());
@@ -2058,6 +2075,45 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
         return result.length()>=40 ? ObjectId.fromString(result.substring(0, 40)) : null;
     }
 
+    public Map<String, ObjectId> getRemoteReferences(String url, String pattern, boolean headsOnly, boolean tagsOnly)
+            throws GitException, InterruptedException {
+        ArgumentListBuilder args = new ArgumentListBuilder("ls-remote");
+        if (headsOnly) {
+            args.add("-h");
+        }
+        if (tagsOnly) {
+            args.add("-t");
+        }
+        args.add(url);
+        if (pattern != null) {
+            args.add(pattern);
+        }
+
+        StandardCredentials cred = credentials.get(url);
+        if (cred == null) cred = defaultCredentials;
+
+        String result = launchCommandWithCredentials(args, null, cred, url);
+
+        Map<String, ObjectId> references = new HashMap<String, ObjectId>();
+        String[] lines = result.split("\n");
+        for (String line : lines) {
+            if (line.length() < 41) throw new GitException("unexpected ls-remote output " + line);
+            String refName = line.substring(41);
+            ObjectId refObjectId = ObjectId.fromString(line.substring(0, 40));
+            if (refName.startsWith("refs/tags") && refName.endsWith("^{}")) {
+                // get peeled object id for annotated tag
+                String tagName = refName.replace("^{}", "");
+                // Replace with the peeled object id if the entry with tagName exists
+                references.put(tagName, refObjectId);
+            } else {
+                if (!references.containsKey(refName)) {
+                    references.put(refName, refObjectId);
+                }
+            }
+
+        }
+        return references;
+    }
 
     //
     //
@@ -2096,8 +2152,21 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
     }
 
     @Deprecated
-    public List<Branch> getBranchesContaining(String revspec) throws GitException, InterruptedException {
-        return new ArrayList<Branch>(parseBranches(launchCommand("branch", "-a", "--contains", revspec)));
+    public List<Branch> getBranchesContaining(String revspec) throws GitException,
+            InterruptedException {
+        // For backward compatibility we do query remote branches here
+        return getBranchesContaining(revspec, true);
+    }
+
+    public List<Branch> getBranchesContaining(String revspec, boolean allBranches)
+            throws GitException, InterruptedException {
+        final String commandOutput;
+        if (allBranches) {
+            commandOutput = launchCommand("branch", "-a", "--contains", revspec);
+        } else {
+            commandOutput = launchCommand("branch", "--contains", revspec);
+        }
+        return new ArrayList<Branch>(parseBranches(commandOutput));
     }
 
     @Deprecated

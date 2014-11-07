@@ -23,7 +23,6 @@ import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.transport.RefSpec;
 import org.eclipse.jgit.transport.RemoteConfig;
 import org.eclipse.jgit.transport.URIish;
-
 import javax.annotation.Nonnull;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -414,6 +413,10 @@ class RemoteGitImpl implements GitClient, IGitAPI, Serializable {
         return proxy.getHeadRev(remoteRepoUrl, branch);
     }
 
+    public Map<String, ObjectId> getRemoteReferences(String remoteRepoUrl, String pattern, boolean headsOnly, boolean tagsOnly) throws GitException, InterruptedException {
+        return proxy.getRemoteReferences(remoteRepoUrl, pattern, headsOnly, tagsOnly);
+    }
+
     public ObjectId revParse(String revName) throws GitException, InterruptedException {
         return proxy.revParse(revName);
     }
@@ -615,4 +618,9 @@ class RemoteGitImpl implements GitClient, IGitAPI, Serializable {
     }
 
     private static final long serialVersionUID = 1L;
+
+    public List<Branch> getBranchesContaining(String revspec, boolean allBranches)
+            throws GitException, InterruptedException {
+        return getGitAPI().getBranchesContaining(revspec, allBranches);
+    }
 }
