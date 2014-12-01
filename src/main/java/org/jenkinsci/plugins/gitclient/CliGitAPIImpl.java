@@ -117,7 +117,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
     // AABBCCDD where AA=major, BB=minor, CC=rev, DD=bugfix
     private long gitVersion = 0;
     private long computeVersionFromBits(int major, int minor, int rev, int bugfix) {
-        return (major*1000000) + (minor*10000) + (rev*100) + bugfix;
+        return (major*1000000L) + (minor*10000L) + (rev*100L) + bugfix;
     }
     private void getGitVersion() {
         if (gitVersion != 0) {
@@ -148,7 +148,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
              * before parsing.
              */
 
-            String[] fields = version.split(" ")[2].replaceAll("msysgit.", "").split("\\.");
+            String[] fields = version.split(" ")[2].replace("msysgit.", "").split("\\.");
 
             gitMajorVersion  = Integer.parseInt(fields[0]);
             gitMinorVersion  = (fields.length > 1) ? Integer.parseInt(fields[1]) : 0;
@@ -187,8 +187,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
 
     public boolean hasGitRepo() throws GitException, InterruptedException {
         if (hasGitRepo(".git")) {
-            // Check if this is actually a valid git repo by checking ls-files. If it's duff, this will
-            // fail. HEAD is not guaranteed to be valid (e.g. new repo).
+            // Check if this is a valid git repo with --is-inside-work-tree
             try {
                 launchCommand("rev-parse", "--is-inside-work-tree");
             } catch (Exception ex) {

@@ -1040,10 +1040,10 @@ public abstract class GitAPITestCase extends TestCase {
     }
 
     /**
-     * JGit 3.3.0 prune during fetch removes more remote branches than
-     * command line git prunes during fetch.  This test should be used
-     * to evaluate future versions of JGit to see if their pruning
-     * behavior more closely emulates command line git.
+     * JGit 3.3.0 thru 3.5.2 prune during fetch prunes more remote
+     * branches than command line git prunes during fetch.  This test
+     * should be used to evaluate future versions of JGit to see if
+     * pruning behavior more closely emulates command line git.
      */
     @NotImplementedInJGit
     public void test_fetch_with_prune() throws Exception {
@@ -1313,6 +1313,18 @@ public abstract class GitAPITestCase extends TestCase {
         w.tag("another_test");
         w.tag("yet_another");
         Set<String> allTags = w.git.getTagNames(null);
+        assertTrue("tag 'test' not listed", allTags.contains("test"));
+        assertTrue("tag 'another_test' not listed", allTags.contains("another_test"));
+        assertTrue("tag 'yet_another' not listed", allTags.contains("yet_another"));
+    }
+
+    public void test_list_tags_star_filter() throws Exception {
+        w.init();
+        w.commitEmpty("init");
+        w.tag("test");
+        w.tag("another_test");
+        w.tag("yet_another");
+        Set<String> allTags = w.git.getTagNames("*");
         assertTrue("tag 'test' not listed", allTags.contains("test"));
         assertTrue("tag 'another_test' not listed", allTags.contains("another_test"));
         assertTrue("tag 'yet_another' not listed", allTags.contains("yet_another"));
@@ -3201,44 +3213,82 @@ public abstract class GitAPITestCase extends TestCase {
      * JGit does not have that limitation.
      */
     public void check_longpaths(boolean longpathsEnabled) throws Exception {
-        String shortName = "0123456789abcdef";
+        String shortName = "0123456789abcdef" + "ghijklmnopqrstuv";
         String longName = shortName + shortName + shortName + shortName;
 
         String dirName1 = longName;
-        commitFile(dirName1, "file1", longpathsEnabled);
+        commitFile(dirName1, "file1a", longpathsEnabled);
 
         String dirName2 = dirName1 + File.separator + longName;
-        commitFile(dirName2, "file2", longpathsEnabled);
+        commitFile(dirName2, "file2b", longpathsEnabled);
 
         String dirName3 = dirName2 + File.separator + longName;
-        commitFile(dirName3, "file3", longpathsEnabled);
+        commitFile(dirName3, "file3c", longpathsEnabled);
 
         String dirName4 = dirName3 + File.separator + longName;
-        commitFile(dirName4, "file4", longpathsEnabled);
+        commitFile(dirName4, "file4d", longpathsEnabled);
 
         String dirName5 = dirName4 + File.separator + longName;
-        commitFile(dirName5, "file5", longpathsEnabled);
+        commitFile(dirName5, "file5e", longpathsEnabled);
+    }
+
+    private String getConfigValue(File workingDir, String name) throws IOException, InterruptedException {
+        String[] args = {"git", "config", "--get", name};
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        int st = new Launcher.LocalLauncher(listener).launch().pwd(workingDir).cmds(args).stdout(out).join();
+        String result = out.toString();
+        if (st != 0 && result != null && !result.isEmpty()) {
+            fail("git config --get " + name + " failed with result: " + result);
+        }
+        return out.toString().trim();
+    }
+
+    private String getHomeConfigValue(String name) throws IOException, InterruptedException {
+        return getConfigValue(new File(System.getProperty("user.home")), name);
+    }
+
+    private void assert_longpaths(boolean expectedLongPathSetting) throws IOException, InterruptedException {
+        String value = getHomeConfigValue("core.longpaths");
+        boolean longPathSetting = Boolean.valueOf(value);
+        assertEquals("Wrong value: '" + value + "'", expectedLongPathSetting, longPathSetting);
+    }
+
+    private void assert_longpaths(WorkingArea workingArea, boolean expectedLongPathSetting) throws IOException, InterruptedException {
+        String value = getConfigValue(workingArea.repo, "core.longpaths");
+        boolean longPathSetting = Boolean.valueOf(value);
+        assertEquals("Wrong value: '" + value + "'", expectedLongPathSetting, longPathSetting);
     }
 
     public void test_longpaths_default() throws Exception {
+        assert_longpaths(false);
         w.init();
+        assert_longpaths(w, false);
         check_longpaths(false);
+        assert_longpaths(w, false);
     }
 
     @NotImplementedInJGit
     /* Not implemented in JGit because it is not needed there */
     public void test_longpaths_enabled() throws Exception {
+        assert_longpaths(false);
         w.init();
-        w.cmd("git config --add core.longpaths true");
+        assert_longpaths(w, false);
+        w.cmd("git config core.longpaths true");
+        assert_longpaths(w, true);
         check_longpaths(true);
+        assert_longpaths(w, true);
     }
 
     @NotImplementedInJGit
     /* Not implemented in JGit because it is not needed there */
     public void test_longpaths_disabled() throws Exception {
+        assert_longpaths(false);
         w.init();
-        w.cmd("git config --add core.longpaths false");
+        assert_longpaths(w, false);
+        w.cmd("git config core.longpaths false");
+        assert_longpaths(w, false);
         check_longpaths(false);
+        assert_longpaths(w, false);
     }
 
     @NotImplementedInJGit
