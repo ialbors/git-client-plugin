@@ -134,18 +134,21 @@ import edu.umd.cs.findbugs.annotations.NonNull;
  * @author Kohsuke Kawaguchi
  */
 public class JGitAPIImpl extends LegacyCompatibleGitAPIImpl {
+    private static final long serialVersionUID = 1L;
 
     private final TaskListener listener;
     private PersonIdent author, committer;
 
-    private CredentialsProvider provider;
+    private transient CredentialsProvider provider;
 
     JGitAPIImpl(File workspace, TaskListener listener) {
     	this(workspace, listener, null);
     }
     
     JGitAPIImpl(File workspace, TaskListener listener, EnvVars envVars) {
-        super(workspace);
+        /* If workspace is null, then default to current directory to match 
+         * CliGitAPIImpl behavior */
+        super(workspace == null ? new File(".") : workspace);
         this.listener = listener;
 
         if(envVars != null)
