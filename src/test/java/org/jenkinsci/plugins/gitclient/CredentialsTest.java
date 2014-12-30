@@ -57,7 +57,7 @@ public class CredentialsTest {
 
     protected String gitImpl; /* either "git" or "jgit" */
 
-    private String expectedLogSubstring = null;
+    private List<String> expectedLogSubstrings = new ArrayList<String>();
 
     private final TemporaryDirectoryAllocator temporaryDirectoryAllocator = new TemporaryDirectoryAllocator();
 
@@ -102,7 +102,8 @@ public class CredentialsTest {
         listener = new hudson.util.LogTaskListener(logger, Level.ALL);
         listener.getLogger().println(LOGGING_STARTED);
         git = Git.with(listener, new hudson.EnvVars()).in(repo).using(gitImpl).getClient();
-        setExpectedLogSubstring("> git fetch ");
+        addExpectedLogSubstring("> git -c core.askpass=true fetch ");
+        addExpectedLogSubstring("> git checkout -b master ");
     }
 
     @After
@@ -111,18 +112,22 @@ public class CredentialsTest {
         try {
             String messages = StringUtils.join(handler.getMessages(), ";");
             assertTrue("Logging not started: " + messages, handler.containsMessageSubstring(LOGGING_STARTED));
-            if (expectedLogSubstring != null) {
+            for (String expectedLogSubstring : expectedLogSubstrings) {
                 assertTrue("No '" + expectedLogSubstring + "' in " + messages,
                         handler.containsMessageSubstring(expectedLogSubstring));
             }
         } finally {
-            setExpectedLogSubstring(null);
+            clearExpectedLogSubstring();
             handler.close();
         }
     }
 
-    protected void setExpectedLogSubstring(String expectedLogSubstring) {
-        this.expectedLogSubstring = expectedLogSubstring;
+    protected void addExpectedLogSubstring(String expectedLogSubstring) {
+        this.expectedLogSubstrings.add(expectedLogSubstring);
+    }
+
+    protected void clearExpectedLogSubstring() {
+        this.expectedLogSubstrings = new ArrayList<String>();
     }
 
     private BasicSSHUserPrivateKey newCredential(File privateKey, String username) throws IOException {
@@ -159,6 +164,10 @@ public class CredentialsTest {
             CSVReader reader = new CSVReader(new FileReader(authDataDefinitions));
             List<String[]> myEntries = reader.readAll();
             for (String[] entry : myEntries) {
+                if (entry.length < 3) {
+                    System.out.println("Too few fields(" + entry.length + ") in " + entry[0]);
+                    continue;
+                }
                 String repoURL = entry[0];
                 String username = entry[1];
                 File privateKey = new File(authDataDir, entry[2]);
@@ -207,7 +216,7 @@ public class CredentialsTest {
         assertTrue("master: " + master + " not in repo", git.isCommitInRepo(master));
         assertEquals("Master != HEAD", master, git.getRepository().getRef("master").getObjectId());
         assertEquals("Wrong branch", "master", git.getRepository().getBranch());
-        if (gitImpl == "git") {
+        if (gitImpl.equals("git")) {
             /* The checkout command for JGit fails to checkout the files in this
              * test.  I am still working to understand why it fails, since it
              * works in the typical use case with the plugin, and it works with
