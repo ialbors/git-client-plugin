@@ -1106,7 +1106,15 @@ public abstract class GitAPITestCase extends TestCase {
         newArea.git.fetch_().from(new URIish(bare.repo.toString()), refSpecs).prune().execute();
         remoteBranches = newArea.git.getRemoteBranches();
         assertBranchesExist(remoteBranches, "origin/master", "origin/branch2", "origin/HEAD");
-        assertEquals("Wrong count in " + remoteBranches, 3, remoteBranches.size());
+
+        /* Git 1.7.1 on Red Hat 6 does not prune branch1, don't fail the test
+         * on that old git version.
+         */
+        int expectedBranchCount = 3;
+        if (!w.cgit().isAtLeastVersion(1, 7, 9, 0)) {
+            expectedBranchCount = 4;
+        }
+        assertEquals("Wrong count in " + remoteBranches, expectedBranchCount, remoteBranches.size());
     }
 
     public void test_fetch_from_url() throws Exception {
@@ -1824,6 +1832,12 @@ public abstract class GitAPITestCase extends TestCase {
 
     @NotImplementedInJGit
     public void test_sparse_checkout() throws Exception {
+        /* Sparse checkout was added in git 1.7.0, but the checkout -f syntax 
+         * required by the plugin implementation does not work in git 1.7.1.
+         */
+        if (!w.cgit().isAtLeastVersion(1, 7, 9, 0)) {
+            return;
+        }
         // Create a repo for cloning purpose
         w.init();
         w.commitEmpty("init");
@@ -2159,7 +2173,13 @@ public abstract class GitAPITestCase extends TestCase {
         w.igit().merge("branch1");
         assertTrue("file1 does not exist after merge", w.exists("file1"));
 
-        w.cmd("git checkout --orphan newroot"); // Create an indepedent root
+        /* Git 1.7.1 does not understand the --orphan argument to checkout.
+         * Stop the test here on older git versions 
+         */
+        if (!w.cgit().isAtLeastVersion(1, 7, 9, 0)) {
+            return;
+        }
+        w.cmd("git checkout --orphan newroot"); // Create an independent root
         w.commitEmpty("init-on-newroot");
         final ObjectId newRootCommit = w.head();
         assertNull("Common root not expected", w.igit().mergeBase(newRootCommit, branch1));
@@ -2230,9 +2250,7 @@ public abstract class GitAPITestCase extends TestCase {
      * Relies on the branches in the git-client-plugin repository
      * include at least branches named:
      *   master
-     *   mergeCommand
-     *   recovery
-     *   remote
+     *   tests/getSubmodules
      *
      * Also relies on a specific return ordering of the values in the
      * pattern matching performed by getHeadRev, and relies on not
@@ -2245,12 +2263,10 @@ public abstract class GitAPITestCase extends TestCase {
         assertEquals("heads is " + heads, heads.get("refs/heads/master"), master);
         ObjectId wildOrigin = w.git.getHeadRev(localMirror(), "*/master");
         assertEquals("heads is " + heads, heads.get("refs/heads/master"), wildOrigin);
-        ObjectId recovery = w.git.getHeadRev(localMirror(), "not-a-real-origin-but-allowed/*cov*"); // matches recovery
-        assertEquals("heads is " + heads, heads.get("refs/heads/recovery"), recovery);
-        ObjectId mergeCommand = w.git.getHeadRev(localMirror(), "yyzzy*/*er*"); // matches master, MergeCommand, and recovery
-        assertEquals("heads is " + heads, heads.get("refs/heads/MergeCommand"), mergeCommand);
-        ObjectId recovery1 = w.git.getHeadRev(localMirror(), "X/re[mc]*o*e*"); // matches recovery and remote
-        assertEquals("heads is " + heads, heads.get("refs/heads/recovery"), recovery1);
+        ObjectId master1 = w.git.getHeadRev(localMirror(), "not-a-real-origin-but-allowed/*ast*"); // matches master
+        assertEquals("heads is " + heads, heads.get("refs/heads/master"), master1);
+        ObjectId getSubmodules1 = w.git.getHeadRev(localMirror(), "X/g*[b]m*dul*"); // matches tests/getSubmodules
+        assertEquals("heads is " + heads, heads.get("refs/heads/tests/getSubmodules"), getSubmodules1);
         ObjectId getSubmodules = w.git.getHeadRev(localMirror(), "N/*od*");
         assertEquals("heads is " + heads, heads.get("refs/heads/tests/getSubmodules"), getSubmodules);
     }
