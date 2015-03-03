@@ -699,7 +699,11 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
      */
     public ChangelogCommand changelog() {
         return new ChangelogCommand() {
+
+            /** Equivalent to the git-log raw format but using ISO 8601 date format - also prevent to depend on git CLI future changes */
+            public static final String RAW = "commit %H%ntree %T%nparent %P%nauthor %aN <%aE> %ai%ncommitter %cN <%cE> %ci%n%n%w(76,4,4)%s%n%n%b";
             final List<String> revs = new ArrayList<String>();
+
             Integer n = null;
             Writer out = null;
 
@@ -736,7 +740,8 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
             }
 
             public void execute() throws GitException, InterruptedException {
-                ArgumentListBuilder args = new ArgumentListBuilder(gitExe, "whatchanged", "--no-abbrev", "-M", "--pretty=raw");
+                ArgumentListBuilder args = new ArgumentListBuilder(gitExe, "whatchanged", "--no-abbrev", "-M");
+                args.add("--format="+RAW);
                 if (n!=null)
                     args.add("-n").add(n);
                 for (String rev : this.revs)
@@ -1554,14 +1559,13 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
             environment.put("GIT_ASKPASS", launcher.isUnix() ? "/bin/echo" : "echo ");
         }
         String command = gitExe + " " + StringUtils.join(args.toCommandArray(), " ");
-        int status = -1;
         try {
             args.prepend(gitExe);
             listener.getLogger().println(" > " + command + (timeout != null ? TIMEOUT_LOG_PREFIX + timeout : ""));
             Launcher.ProcStarter p = launcher.launch().cmds(args.toCommandArray()).
                     envs(environment).stdout(fos).stderr(err);
             if (workDir != null) p.pwd(workDir);
-            status = p.start().joinWithTimeout(timeout != null ? timeout : TIMEOUT, TimeUnit.MINUTES, listener);
+            int status = p.start().joinWithTimeout(timeout != null ? timeout : TIMEOUT, TimeUnit.MINUTES, listener);
 
             String result = fos.toString();
             if (status != 0) {
@@ -1570,28 +1574,13 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
 
             return result;
         } catch (GitException e) {
-            listener.getLogger().println(" >> GitException message: " + e.getMessage());
-            status = -2;
             throw e;
         } catch (IOException e) {
-            listener.getLogger().println(" >> IOException message: " + e.getMessage());
-            status = -3;
             throw new GitException("Error performing command: " + command, e);
         } catch (InterruptedException e) {
-            listener.getLogger().println(" >> InterruptedException message: " + e.getMessage());
-            status = -4;
             throw e;
         } catch (Throwable t) {
-            listener.getLogger().println(" >> Throwable message: " + t.getMessage());
-            status = -5;
             throw new GitException("Error performing git command", t);
-        } finally {
-            if (status != 0 && !fos.toString().isEmpty()) {
-                listener.getLogger().println(" >> stdout: " + fos.toString());
-            }
-            if (status != 0 && !err.toString().isEmpty()) {
-                listener.getLogger().println(" >> stderr: " + err.toString());
-            }
         }
 
     }
@@ -2087,6 +2076,9 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
 
     /** {@inheritDoc} */
     public boolean isCommitInRepo(ObjectId commit) throws InterruptedException {
+        if (commit == null) {
+            return false;
+        }
         try {
             List<ObjectId> revs = revList(commit.name());
 

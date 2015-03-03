@@ -586,12 +586,14 @@ public abstract class GitAPITestCase extends TestCase {
 
     public void test_detect_commit_in_repo() throws Exception {
         w.init();
+        assertFalse(w.git.isCommitInRepo(null)); // NPE safety check
         w.touch("file1");
         w.git.add("file1");
         w.git.commit("commit1");
         assertTrue("HEAD commit not found", w.git.isCommitInRepo(w.head()));
         // this MAY fail if commit has this exact sha1, but please admit this would be unlucky
         assertFalse(w.git.isCommitInRepo(ObjectId.fromString("1111111111111111111111111111111111111111")));
+        assertFalse(w.git.isCommitInRepo(null)); // NPE safety check
     }
 
     @Deprecated
@@ -1065,8 +1067,9 @@ public abstract class GitAPITestCase extends TestCase {
      * branches than command line git prunes during fetch.  This test
      * should be used to evaluate future versions of JGit to see if
      * pruning behavior more closely emulates command line git.
+     * 
+     * This has been fixed using a workaround.
      */
-    @NotImplementedInJGit
     public void test_fetch_with_prune() throws Exception {
         WorkingArea bare = new WorkingArea();
         bare.init(true);
@@ -1131,7 +1134,7 @@ public abstract class GitAPITestCase extends TestCase {
          * on that old git version.
          */
         int expectedBranchCount = 3;
-        if (!w.cgit().isAtLeastVersion(1, 7, 9, 0)) {
+        if (newArea.git instanceof CliGitAPIImpl && !w.cgit().isAtLeastVersion(1, 7, 9, 0)) {
             expectedBranchCount = 4;
         }
         assertEquals("Wrong count in " + remoteBranches, expectedBranchCount, remoteBranches.size());
