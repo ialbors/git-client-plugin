@@ -857,8 +857,8 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                 if (remoteTracking && isAtLeastVersion(1,8,2,0)) {
                     args.add("--remote");
 
-                    for (String key : submodBranch.keySet()) {
-                        launchCommand("config", "-f", ".gitmodules", "submodule."+key+".branch", submodBranch.get(key));
+                    for (Map.Entry<String, String> entry : submodBranch.entrySet()) {
+                        launchCommand("config", "-f", ".gitmodules", "submodule."+entry.getKey()+".branch", entry.getValue());
                     }
                 }
                 if ((ref != null) && !ref.isEmpty()) {
@@ -1833,7 +1833,10 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                     if (Pattern.compile("index\\.lock").matcher(e.getMessage()).find()) {
                         throw new GitLockFailedException("Could not lock repository. Please try again", e);
                     } else {
-                        throw new GitException("Could not checkout " + branch + " with start point " + ref, e);
+                        if (branch != null)
+                            throw new GitException("Could not checkout " + branch + " with start point " + ref, e);
+                        else
+                            throw new GitException("Could not checkout " + ref, e);
                     }
                 } catch (InterruptedException e) {
                     final File indexFile = new File(workspace.getPath() + File.separator
