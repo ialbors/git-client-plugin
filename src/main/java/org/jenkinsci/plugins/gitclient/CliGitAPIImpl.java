@@ -124,9 +124,11 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
              * something like Major.Minor.Rev.msysgit.BugFix. This
              * removes the inserted term from the version string
              * before parsing.
+             * git 2.5.0 for windows adds a similar component with
+             * the string "windows".  Remove it as well
              */
 
-            String[] fields = version.split(" ")[2].replace("msysgit.", "").split("\\.");
+            String[] fields = version.split(" ")[2].replace("msysgit.", "").replace("windows.", "").split("\\.");
 
             gitMajorVersion  = Integer.parseInt(fields[0]);
             gitMinorVersion  = (fields.length > 1) ? Integer.parseInt(fields[1]) : 0;
@@ -245,6 +247,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
             public boolean shallow;
             public Integer timeout;
             public boolean tags = true;
+            public Integer depth = 1;
 
             public FetchCommand from(URIish remote, List<RefSpec> refspecs) {
                 this.url = remote;
@@ -272,6 +275,11 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
             	return this;
             }
 
+            public FetchCommand depth(Integer depth) {
+                this.depth = depth;
+                return this;
+            }
+
             public void execute() throws GitException, InterruptedException {
                 listener.getLogger().println(
                         "Fetching upstream changes from " + url);
@@ -293,7 +301,12 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
 
                 if (prune) args.add("--prune");
 
-                if (shallow) args.add("--depth=1");
+                if (shallow) {
+                    if (depth == null){
+                        depth = 1;
+                    }
+                    args.add("--depth=" + depth);
+                }
 
                 warnIfWindowsTemporaryDirNameHasSpaces();
 
@@ -372,6 +385,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
             Integer timeout;
             boolean tags = true;
             List<RefSpec> refspecs;
+            Integer depth = 1;
 
             public CloneCommand url(String url) {
                 this.url = url;
@@ -411,6 +425,11 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
             public CloneCommand timeout(Integer timeout) {
             	this.timeout = timeout;
             	return this;
+            }
+
+            public CloneCommand depth(Integer depth) {
+                this.depth = depth;
+                return this;
             }
 
             public CloneCommand refspecs(List<RefSpec> refspecs) {
@@ -485,6 +504,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                 }
                 fetch_().from(urIish, refspecs)
                         .shallow(shallow)
+                        .depth(depth)
                         .timeout(timeout)
                         .tags(tags)
                         .execute();
@@ -1509,9 +1529,17 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
         if (sshexe != null && sshexe.exists()) {
             return sshexe;
         }
+        sshexe = getFileFromEnv("ProgramFiles", "\\Git\\usr\\bin\\ssh.exe");
+        if (sshexe != null && sshexe.exists()) {
+            return sshexe;
+        }
 
         // Check Program Files(x86) for 64 bit computer
         sshexe = getFileFromEnv("ProgramFiles(x86)", "\\Git\\bin\\ssh.exe");
+        if (sshexe != null && sshexe.exists()) {
+            return sshexe;
+        }
+        sshexe = getFileFromEnv("ProgramFiles(x86)", "\\Git\\usr\\bin\\ssh.exe");
         if (sshexe != null && sshexe.exists()) {
             return sshexe;
         }
@@ -1529,6 +1557,10 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
             // instead of the bin directory, replace cmd with bin in
             // the path while trying to find ssh.exe.
             sshexe = getSSHExeFromGitExeParentDir(gitPath.replace("/cmd/", "/bin/").replace("\\cmd\\", "\\bin\\"));
+            if (sshexe != null && sshexe.exists()) {
+                return sshexe;
+            }
+            sshexe = getSSHExeFromGitExeParentDir(gitPath.replace("/cmd/", "/usr/bin/").replace("\\cmd\\", "\\usr\\bin\\"));
             if (sshexe != null && sshexe.exists()) {
                 return sshexe;
             }
@@ -1562,7 +1594,10 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
         PrintWriter w = new PrintWriter(ssh);
         w.println("#!/bin/sh");
         // ${SSH_ASKPASS} might be ignored if ${DISPLAY} is not set
-        w.println("[ -z \"${DISPLAY}\" ] && export DISPLAY=:123.456");
+        w.println("if [ -z \"${DISPLAY}\" ]; then");
+        w.println("  DISPLAY=:123.456");
+        w.println("  export DISPLAY");
+        w.println("fi");
         w.println("ssh -i \"" + key.getAbsolutePath() + "\" -l \"" + user + "\" -o StrictHostKeyChecking=no \"$@\"");
         w.close();
         ssh.setExecutable(true);
