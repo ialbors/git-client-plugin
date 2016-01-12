@@ -87,6 +87,12 @@ public abstract class GitAPITestCase extends TestCase {
     private static final String LOGGING_STARTED = "Logging started";
 
     private static final String SRC_DIR = (new File(".")).getAbsolutePath();
+    private String revParseBranchName = null;
+
+    private void createRevParseBranch() throws GitException, InterruptedException {
+        revParseBranchName = "rev-parse-branch-" + UUID.randomUUID().toString();
+        w.git.checkout("origin/master", revParseBranchName);
+    }
 
     /**
      * One local workspace of a Git repository on a temporary directory
@@ -306,6 +312,7 @@ public abstract class GitAPITestCase extends TestCase {
 
     @Override
     protected void setUp() throws Exception {
+        revParseBranchName = null;
         setTimeoutVisibleInCurrentTest(true);
         expectedTimeouts = null;
         Logger logger = Logger.getLogger(this.getClass().getPackage().getName() + "-" + logCount++);
@@ -351,6 +358,20 @@ public abstract class GitAPITestCase extends TestCase {
         throw new IllegalStateException();
     }
 
+    /* JENKINS-33258 detected many calls to git rev-parse. This checks
+     * those calls are not being made. The createRevParseBranch call
+     * creates a branch whose name is unknown to the tests. This
+     * checks that the branch name is not mentioned in a call to
+     * git rev-parse.
+     */
+    private void checkRevParseCalls(String branchName) {
+        String messages = StringUtils.join(handler.getMessages(), ";");
+        // Linux uses rev-parse without quotes
+        assertFalse("git rev-parse called: " + messages, handler.containsMessageSubstring("rev-parse " + branchName));
+        // Windows quotes the rev-parse argument
+        assertFalse("git rev-parse called: " + messages, handler.containsMessageSubstring("rev-parse \"" + branchName));
+    }
+
     private void checkTimeout() {
         List<Integer> timeouts = handler.getTimeouts();
         if (expectedTimeouts == null) {
@@ -379,6 +400,9 @@ public abstract class GitAPITestCase extends TestCase {
             assertTrue("Logging not started: " + messages, handler.containsMessageSubstring(LOGGING_STARTED));
             if (getTimeoutVisibleInCurrentTest()) {
                 checkTimeout();
+            }
+            if (revParseBranchName != null) {
+                checkRevParseCalls(revParseBranchName);
             }
         } finally {
             handler.close();
@@ -458,6 +482,7 @@ public abstract class GitAPITestCase extends TestCase {
     {
         int newTimeout = 7;
         w.git.clone_().timeout(newTimeout).url(localMirror()).repositoryName("origin").execute();
+        createRevParseBranch(); // Verify JENKINS-32258 is fixed
         w.git.checkout("origin/master", "master");
         check_remote_url("origin");
         assertBranchesExist(w.git.getBranches(), "master");
@@ -480,6 +505,7 @@ public abstract class GitAPITestCase extends TestCase {
     public void test_clone_shallow() throws IOException, InterruptedException
     {
         w.git.clone_().url(localMirror()).repositoryName("origin").shallow().execute();
+        createRevParseBranch(); // Verify JENKINS-32258 is fixed
         w.git.checkout("origin/master", "master");
         check_remote_url("origin");
         assertBranchesExist(w.git.getBranches(), "master");
@@ -500,6 +526,7 @@ public abstract class GitAPITestCase extends TestCase {
     public void test_clone_shared() throws IOException, InterruptedException
     {
         w.git.clone_().url(localMirror()).repositoryName("origin").shared().execute();
+        createRevParseBranch(); // Verify JENKINS-32258 is fixed
         w.git.checkout("origin/master", "master");
         check_remote_url("origin");
         assertBranchesExist(w.git.getBranches(), "master");
@@ -510,6 +537,7 @@ public abstract class GitAPITestCase extends TestCase {
     public void test_clone_reference() throws IOException, InterruptedException
     {
         w.git.clone_().url(localMirror()).repositoryName("origin").reference(localMirror()).execute();
+        createRevParseBranch(); // Verify JENKINS-32258 is fixed
         w.git.checkout("origin/master", "master");
         check_remote_url("origin");
         assertBranchesExist(w.git.getBranches(), "master");
@@ -1601,6 +1629,37 @@ public abstract class GitAPITestCase extends TestCase {
         assertEquals("Working SHA1 != bare SHA1", w.git.getHeadRev(w.repoPath(), "master"), bare.git.getHeadRev(bare.repoPath(), "master"));
     }
 
+    @NotImplementedInJGit
+    public void test_push_from_shallow_clone() throws Exception {
+        WorkingArea r = new WorkingArea();
+        r.init();
+        r.commitEmpty("init");
+        r.touch("file1");
+        r.git.add("file1");
+        r.git.commit("commit1");
+        r.cmd("git checkout -b other");
+
+        w.init();
+        w.cmd("git remote add origin " + r.repoPath());
+        w.cmd("git pull --depth=1 origin master");
+
+        w.touch("file2");
+        w.git.add("file2");
+        w.git.commit("commit2");
+        ObjectId sha1 = w.head();
+
+        try {
+            w.git.push("origin", "master");
+            assertTrue("git < 1.9.0 can push from shallow repository", w.cgit().isAtLeastVersion(1, 9, 0, 0));
+            String remoteSha1 = r.cmd("git rev-parse master").substring(0, 40);
+            assertEquals(sha1.name(), remoteSha1);
+        } catch (GitException e) {
+            // expected for git cli < 1.9.0
+            assertTrue("Wrong exception message: " + e, e.getMessage().contains("push from shallow repository"));
+            assertFalse("git >= 1.9.0 can't push from shallow repository", w.cgit().isAtLeastVersion(1, 9, 0, 0));
+        }
+    }
+
     public void test_notes_add() throws Exception {
         w.init();
         w.touch("file1");
@@ -2013,13 +2072,20 @@ public abstract class GitAPITestCase extends TestCase {
         assertFalse(w.git.hasGitModules());
     }
 
+    private boolean isJava6() {
+        if (System.getProperty("java.version").startsWith("1.6")) {
+            return true;
+        }
+        return false;
+    }
+
     /**
      * core.symlinks is set to false by msysgit on Windows and by JGit
      * 3.3.0 on all platforms.  It is not set on Linux.  Refer to
      * JENKINS-21168, JENKINS-22376, and JENKINS-22391 for details.
      */
     private void checkSymlinkSetting(WorkingArea area) throws IOException {
-        String expected = SystemUtils.IS_OS_WINDOWS || area.git instanceof JGitAPIImpl ? "false" : "";
+        String expected = SystemUtils.IS_OS_WINDOWS || (area.git instanceof JGitAPIImpl && isJava6()) ? "false" : "";
         String symlinkValue = null;
         try {
             symlinkValue = w.cmd(true, "git config core.symlinks").trim();
@@ -2396,6 +2462,69 @@ public abstract class GitAPITestCase extends TestCase {
         assertEquals("Squashless merge failed. Should have merged two commits.", 2, commitCountAfter - commitCountBefore);
     }
 
+    public void test_merge_no_commit() throws Exception{
+        w.init();
+        w.commitEmpty("init");
+
+        //Create branch1 and commit a file
+        w.git.branch("branch1");
+        w.git.checkout("branch1");
+        w.touch("file1", "content1");
+        w.git.add("file1");
+        w.git.commit("commit1");
+
+        //Merge branch1 with master, without committing the merge.
+        //Compare commit counts of before and after the merge, should be zero due to the lack of autocommit.
+        w.git.checkout("master");
+        final int commitCountBefore = w.git.revList("HEAD").size();
+        w.git.merge().setCommit(false).setGitPluginFastForwardMode(MergeCommand.GitPluginFastForwardMode.NO_FF).setRevisionToMerge(w.git.getHeadRev(w.repoPath(), "branch1")).execute();
+        final int commitCountAfter = w.git.revList("HEAD").size();
+
+        assertEquals("No Commit merge failed. Shouldn't have committed any changes.", commitCountBefore, commitCountAfter);
+    }
+
+    public void test_merge_commit() throws Exception{
+        w.init();
+        w.commitEmpty("init");
+
+        //Create branch1 and commit a file
+        w.git.branch("branch1");
+        w.git.checkout("branch1");
+        w.touch("file1", "content1");
+        w.git.add("file1");
+        w.git.commit("commit1");
+
+        //Merge branch1 with master, without committing the merge.
+        //Compare commit counts of before and after the merge, should be two due to the commit of the file and the commit of the merge.
+        w.git.checkout("master");
+        final int commitCountBefore = w.git.revList("HEAD").size();
+        w.git.merge().setCommit(true).setGitPluginFastForwardMode(MergeCommand.GitPluginFastForwardMode.NO_FF).setRevisionToMerge(w.git.getHeadRev(w.repoPath(), "branch1")).execute();
+        final int commitCountAfter = w.git.revList("HEAD").size();
+
+        assertEquals("Commit merge failed. Should have committed the merge.", 2, commitCountAfter - commitCountBefore);
+    }
+
+    public void test_merge_with_message() throws Exception {
+        w.init();
+        w.commitEmpty("init");
+
+        // First commit to branch1
+        w.git.branch("branch1");
+        w.git.checkout("branch1");
+        w.touch("file1", "content1");
+        w.git.add("file1");
+        w.git.commit("commit1");
+
+        // Merge branch1 into master
+        w.git.checkout("master");
+        String mergeMessage = "Merge message to be tested.";
+        w.git.merge().setMessage(mergeMessage).setGitPluginFastForwardMode(MergeCommand.GitPluginFastForwardMode.NO_FF).setRevisionToMerge(w.git.getHeadRev(w.repoPath(), "branch1")).execute();
+        // Obtain last commit message
+        String resultMessage = w.git.showRevision(w.head()).get(7).trim();
+
+        assertEquals("Custom message merge failed. Should have set custom merge message.", mergeMessage, resultMessage);
+    }
+
     @Deprecated
     public void test_merge_refspec() throws Exception {
         w.init();
@@ -2458,6 +2587,77 @@ public abstract class GitAPITestCase extends TestCase {
         w.git.setRemoteUrl("origin", remoteUrl);
         assertEquals("Wrong origin default remote", "origin", w.igit().getDefaultRemote("origin"));
         assertEquals("Wrong invalid default remote", "origin", w.igit().getDefaultRemote("invalid"));
+    }
+
+    public void test_rebase_passes_without_conflict() throws Exception {
+        w.init();
+        w.commitEmpty("init");
+
+        // First commit to master
+        w.touch("master_file", "master1");
+        w.git.add("master_file");
+        w.git.commit("commit-master1");
+
+        // Create a feature branch and make a commit
+        w.git.branch("feature1");
+        w.git.checkout("feature1");
+        w.touch("feature_file", "feature1");
+        w.git.add("feature_file");
+        w.git.commit("commit-feature1");
+
+        // Second commit to master
+        w.git.checkout("master");
+        w.touch("master_file", "master2");
+        w.git.add("master_file");
+        w.git.commit("commit-master2");
+
+        // Rebase feature commit onto master
+        w.git.checkout("feature1");
+        w.git.rebase().setUpstream("master").execute();
+
+        assertThat("Should've rebased feature1 onto master", w.git.revList("feature1").contains(w.git.revParse("master")));
+        assertEquals("HEAD should be on the rebased branch", w.git.revParse("HEAD").name(), w.git.revParse("feature1").name());
+        assertThat("Rebased file should be present in the worktree",w.git.getWorkTree().child("feature_file").exists());
+    }
+
+    public void test_rebase_fails_with_conflict() throws Exception {
+        w.init();
+        w.commitEmpty("init");
+
+        // First commit to master
+        w.touch("file", "master1");
+        w.git.add("file");
+        w.git.commit("commit-master1");
+
+        // Create a feature branch and make a commit
+        w.git.branch("feature1");
+        w.git.checkout("feature1");
+        w.touch("file", "feature1");
+        w.git.add("file");
+        w.git.commit("commit-feature1");
+
+        // Second commit to master
+        w.git.checkout("master");
+        w.touch("file", "master2");
+        w.git.add("file");
+        w.git.commit("commit-master2");
+
+        // Rebase feature commit onto master
+        w.git.checkout("feature1");
+        try {
+            w.git.rebase().setUpstream("master").execute();
+            fail("Rebase did not throw expected GitException");
+        } catch (GitException e) {
+            assertEquals("HEAD not reset to the feature branch.", w.git.revParse("HEAD").name(), w.git.revParse("feature1").name());
+            Status status = new org.eclipse.jgit.api.Git(w.repo()).status().call();
+            assertTrue("Workspace is not clean", status.isClean());
+            assertFalse("Workspace has uncommitted changes", status.hasUncommittedChanges());
+            assertTrue("Workspace has conflicting changes", status.getConflicting().isEmpty());
+            assertTrue("Workspace has missing changes", status.getMissing().isEmpty());
+            assertTrue("Workspace has modified files", status.getModified().isEmpty());
+            assertTrue("Workspace has removed files", status.getRemoved().isEmpty());
+            assertTrue("Workspace has untracked files", status.getUntracked().isEmpty());
+        }
     }
 
     /**

@@ -134,6 +134,8 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 
 import edu.umd.cs.findbugs.annotations.NonNull;
+import org.eclipse.jgit.api.RebaseCommand.Operation;
+import org.eclipse.jgit.api.RebaseResult;
 
 /**
  * GitClient pure Java implementation using JGit.
@@ -1298,7 +1300,7 @@ public class JGitAPIImpl extends LegacyCompatibleGitAPIImpl {
             String msg = commit.getFullMessage();
             if (msg.endsWith("\n")) msg=msg.substring(0,msg.length()-1);
             msg = msg.replace("\n","\n    ");
-            msg="    "+msg+"\n";
+            msg="\n    "+msg+"\n";
 
             pw.println(msg);
 
@@ -1542,6 +1544,8 @@ public class JGitAPIImpl extends LegacyCompatibleGitAPIImpl {
             MergeStrategy strategy;
             FastForwardMode fastForwardMode;
             boolean squash;
+            boolean commit = true;
+            String comment;
 
             public MergeCommand setRevisionToMerge(ObjectId rev) {
                 this.rev = rev;
@@ -1583,6 +1587,16 @@ public class JGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                 return this;
             }
 
+            public MergeCommand setMessage(String comment) {
+                this.comment = comment;
+                return this;
+            }
+
+            public MergeCommand setCommit(boolean commit) {
+                this.commit = commit;
+                return this;
+            }
+
             public void execute() throws GitException, InterruptedException {
                 Repository repo = null;
                 try {
@@ -1590,9 +1604,9 @@ public class JGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                     Git git = git(repo);
                     MergeResult mergeResult;
                     if (strategy != null)
-                        mergeResult = git.merge().setStrategy(strategy).setFastForward(fastForwardMode).setSquash(squash).include(rev).call();
+                        mergeResult = git.merge().setMessage(comment).setStrategy(strategy).setFastForward(fastForwardMode).setSquash(squash).setCommit(commit).include(rev).call();
                     else
-                        mergeResult = git.merge().setFastForward(fastForwardMode).setSquash(squash).include(rev).call();
+                        mergeResult = git.merge().setMessage(comment).setFastForward(fastForwardMode).setSquash(squash).setCommit(commit).include(rev).call();
                     if (!mergeResult.getMergeStatus().isSuccessful()) {
                         git.reset().setMode(HARD).call();
                         throw new GitException("Failed to merge " + rev);
@@ -1629,6 +1643,34 @@ public class JGitAPIImpl extends LegacyCompatibleGitAPIImpl {
 
             public void execute() throws GitException, InterruptedException {
                 doInit(workspace, bare);
+            }
+        };
+    }
+
+    public RebaseCommand rebase() {
+        return new RebaseCommand() {
+            private String upstream;
+
+            public RebaseCommand setUpstream(String upstream) {
+                this.upstream = upstream;
+                return this;
+            }
+
+            public void execute() throws GitException, InterruptedException {
+                Repository repo = null;
+                try {
+                    repo = getRepository();
+                    Git git = git(repo);
+                    RebaseResult rebaseResult = git.rebase().setUpstream(upstream).call();
+                    if (!rebaseResult.getStatus().isSuccessful()) {
+                        git.rebase().setOperation(Operation.ABORT).call();
+                        throw new GitException("Failed to rebase " + upstream);
+                    }
+                } catch (GitAPIException e) {
+                    throw new GitException("Failed to rebase " + upstream, e);
+                } finally {
+                    if (repo != null) repo.close();
+                }
             }
         };
     }

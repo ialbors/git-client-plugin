@@ -525,9 +525,11 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
     public MergeCommand merge() {
         return new MergeCommand() {
             public ObjectId rev;
+            public String comment;
             public String strategy;
             public String fastForwardMode;
             public boolean squash;
+            public boolean commit = true;
 
             public MergeCommand setRevisionToMerge(ObjectId rev) {
                 this.rev = rev;
@@ -549,12 +551,31 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                 return this;
             }
 
+            public MergeCommand setMessage(String comment) {
+                this.comment = comment;
+                return this;
+            }
+
+            public MergeCommand setCommit(boolean commit) {
+                this.commit = commit;
+                return this;
+            }
+
             public void execute() throws GitException, InterruptedException {
                 ArgumentListBuilder args = new ArgumentListBuilder();
                 args.add("merge");
                 try {
                     if(squash) {
                         args.add("--squash");
+                    }
+
+                    if(!commit){
+                        args.add("--no-commit");
+                    }
+
+                    if (comment != null && !comment.isEmpty()) {
+                        args.add("-m");
+                        args.add(comment);
                     }
 
                     if (strategy != null && !strategy.isEmpty() && !strategy.equals(MergeCommand.Strategy.DEFAULT.toString())) {
@@ -566,6 +587,34 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                     launchCommand(args);
                 } catch (GitException e) {
                     throw new GitException("Could not merge " + rev, e);
+                }
+            }
+        };
+    }
+
+    /**
+     * rebase.
+     *
+     * @return a {@link org.jenkinsci.plugins.gitclient.RebaseCommand} object.
+     */
+    public RebaseCommand rebase() {
+        return new RebaseCommand() {
+            private String upstream;
+
+            public RebaseCommand setUpstream(String upstream) {
+                this.upstream = upstream;
+                return this;
+            }
+
+            public void execute() throws GitException, InterruptedException {
+                try {
+                    ArgumentListBuilder args = new ArgumentListBuilder();
+                    args.add("rebase");
+                    args.add(upstream);
+                    launchCommand(args);
+                } catch (GitException e) {
+                    launchCommand("rebase", "--abort");
+                    throw new GitException("Could not rebase " + upstream, e);
                 }
             }
         };
@@ -1052,6 +1101,10 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
             throw new GitException("No output from bare repository check for " + GIT_DIR);
 
         return !"false".equals(line.trim());
+    }
+
+    public boolean isShallowRepository() {
+        return new File(workspace, pathJoin(".git", "shallow")).exists();
     }
 
     private String pathJoin( String a, String b ) {
@@ -1707,6 +1760,10 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                     args.add("--tags");
                 }
 
+                if (!isAtLeastVersion(1,9,0,0) && isShallowRepository()) {
+                    throw new GitException("Can't push from shallow repository using git client older than 1.9.0");
+                }
+
                 StandardCredentials cred = credentials.get(remote.toPrivateString());
                 if (cred == null) cred = defaultCredentials;
                 launchCommandWithCredentials(args, workspace, cred, remote, timeout);
@@ -1717,29 +1774,31 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
     }
 
     /**
-     * parseBranches.
+     * Parse branch name and SHA1 from "fos" argument string.
      *
-     * @param fos a {@link java.lang.String} object.
+     * Argument content must match "git branch -v --no-abbrev".
+     *
+     * One branch per line, two leading characters ignored on each
+     * line, the branch name (not allowed to contain spaces), one or
+     * more spaces, and the 40 character SHA1 of the commit that is
+     * the head of that branch. Text after the SHA1 is ignored.
+     *
+     * @param fos output of "git branch -v --no-abbrev"
      * @return a {@link java.util.Set} object.
-     * @throws hudson.plugins.git.GitException if underlying git operation fails.
-     * @throws java.lang.InterruptedException if interrupted.
      */
-    protected Set<Branch> parseBranches(String fos) throws GitException, InterruptedException {
-        // TODO: git branch -a -v --abbrev=0 would do this in one shot..
-
+    private Set<Branch> parseBranches(String fos) {
         Set<Branch> branches = new HashSet<Branch>();
-
         BufferedReader rdr = new BufferedReader(new StringReader(fos));
         String line;
         try {
             while ((line = rdr.readLine()) != null) {
-                // Ignore the 1st
-                line = line.substring(2);
-                // Ignore '(no branch)' or anything with " -> ", since I think
-                // that's just noise
-                if ((!line.startsWith("("))
-                    && (line.indexOf(" -> ") == -1)) {
-                    branches.add(new Branch(line, revParse(line)));
+                // Ignore leading 2 characters (marker for current branch)
+                // Ignore line if second field is not SHA1 length (40 characters)
+                // Split fields into branch name, SHA1, and rest of line
+                // Fields are separated by one or more spaces
+                String[] branchVerboseOutput = line.substring(2).split(" +", 3);
+                if (branchVerboseOutput[1].length() == 40) {
+                    branches.add(new Branch(branchVerboseOutput[0], ObjectId.fromString(branchVerboseOutput[1])));
                 }
             }
         } catch (IOException e) {
@@ -1759,7 +1818,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
      * @throws java.lang.InterruptedException if interrupted.
      */
     public Set<Branch> getBranches() throws GitException, InterruptedException {
-        return parseBranches(launchCommand("branch", "-a"));
+        return parseBranches(launchCommand("branch", "-a", "-v", "--no-abbrev"));
     }
 
     /**
@@ -2497,9 +2556,9 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
             throws GitException, InterruptedException {
         final String commandOutput;
         if (allBranches) {
-            commandOutput = launchCommand("branch", "-a", "--contains", revspec);
+            commandOutput = launchCommand("branch", "-a", "-v", "--no-abbrev", "--contains", revspec);
         } else {
-            commandOutput = launchCommand("branch", "--contains", revspec);
+            commandOutput = launchCommand("branch", "-v", "--no-abbrev", "--contains", revspec);
         }
         return new ArrayList<Branch>(parseBranches(commandOutput));
     }
