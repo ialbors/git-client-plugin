@@ -39,6 +39,7 @@ import org.kohsuke.stapler.framework.io.WriterOutputStream;
 import java.io.*;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.Charset;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -829,7 +830,11 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                 if (out==null)  throw new IllegalStateException();
 
                 try {
-                    WriterOutputStream w = new WriterOutputStream(out);
+                    // "git whatchanged" std output gives us byte stream of data
+                    // Commit messages in that byte stream are UTF-8 encoded.
+                    // We want to decode bytestream to strings using UTF-8 encoding.
+
+                    WriterOutputStream w = new WriterOutputStream(out, Charset.forName("UTF-8"));
                     try {
                         if (launcher.launch().cmds(args).envs(environment).stdout(w).stderr(listener.getLogger()).pwd(workspace).join() != 0)
                             throw new GitException("Error launching git whatchanged");
@@ -1387,7 +1392,15 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
                     String fileStore = launcher.isUnix() ? store.getAbsolutePath() : "\\\"" + store.getAbsolutePath() + "\\\"";
                     if (credentials instanceof UsernameCredentials) {
                             UsernameCredentials userCredentials = (UsernameCredentials) credentials;
-                            launchCommandIn(workDir, "config", "--local", "credential.username", userCredentials.getUsername());
+                            String username = userCredentials.getUsername();
+                            if (username.trim().isEmpty()) {
+                                String configOutput = launchCommandIn(workDir, "config", "--local", "--list");
+                                if (configOutput.contains("credential.username=")) {
+                                    launchCommandIn(workDir, "config", "--local", "--unset-all", "credential.username");
+                                }
+                            } else {
+                                launchCommandIn(workDir, "config", "--local", "credential.username", userCredentials.getUsername());
+                            }
                     }
                     launchCommandIn(workDir, "config", "--local", "credential.helper", "store --file=" + fileStore);
                 }
@@ -1606,6 +1619,10 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
         // Search for git on the PATH, then look near it
         String gitPath = getPathToExe(gitExe);
         if (gitPath != null) {
+            sshexe = getSSHExeFromGitExeParentDir(gitPath.replace("/bin/", "/usr/bin/").replace("\\bin\\", "\\usr\\bin\\"));
+            if (sshexe != null && sshexe.exists()) {
+                return sshexe;
+            }
             // In case we are using msysgit from the cmd directory
             // instead of the bin directory, replace cmd with bin in
             // the path while trying to find ssh.exe.
@@ -1631,7 +1648,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
         try {
             w = new PrintWriter(ssh);
             w.println("@echo off");
-            w.println("\"" + sshexe.getAbsolutePath() + "\" -i \"" + key.getAbsolutePath() +"\" -l \"" + user + "\" -o StrictHostKeyChecking=no %* ");
+            w.println("\"" + sshexe.getAbsolutePath() + "\" -i \"" + key.getAbsolutePath() +"\" -l \"" + user + "\" -o StrictHostKeyChecking=no -o BatchMode=yes %* ");
             w.flush();
         } finally {
             if (w != null) {
@@ -1651,7 +1668,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
         w.println("  DISPLAY=:123.456");
         w.println("  export DISPLAY");
         w.println("fi");
-        w.println("ssh -i \"" + key.getAbsolutePath() + "\" -l \"" + user + "\" -o StrictHostKeyChecking=no \"$@\"");
+        w.println("ssh -i \"" + key.getAbsolutePath() + "\" -l \"" + user + "\" -o StrictHostKeyChecking=no -o BatchMode=yes \"$@\"");
         w.close();
         ssh.setExecutable(true);
         return ssh;
@@ -1677,7 +1694,7 @@ public class CliGitAPIImpl extends LegacyCompatibleGitAPIImpl {
         EnvVars environment = new EnvVars(env);
         if (!env.containsKey("SSH_ASKPASS")) {
             // GIT_ASKPASS supersed SSH_ASKPASS when set, so don't mask SSH passphrase when set
-            environment.put("GIT_ASKPASS", launcher.isUnix() ? "/bin/echo" : "echo ");
+            environment.put("GIT_ASKPASS", launcher.isUnix() ? "/bin/echo" : "echo");
         }
         String command = gitExe + " " + StringUtils.join(args.toCommandArray(), " ");
         try {
